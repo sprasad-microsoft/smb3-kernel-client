@@ -445,6 +445,23 @@ build_compression_ctxt(struct smb2_compression_capabilities_context *pneg_ctxt)
 	pneg_ctxt->CompressionAlgorithms[2] = SMB3_COMPRESS_LZNT1;
 }
 
+static unsigned int
+build_signing_ctxt(struct smb2_signing_capabilities *pneg_ctxt)
+{
+	unsigned int ctxt_len;
+
+	pneg_ctxt->ContextType = SMB2_SIGNING_CAPABILITIES;
+	pneg_ctxt->DataLength =
+		cpu_to_le16(sizeof(struct smb2_signing_capabilities)
+			  - sizeof(struct smb2_neg_context));
+	pneg_ctxt->SigningAlgorithmCount = cpu_to_le16(1); /* TODO change to 2 */
+	pneg_ctxt->SigningAlgorithms[0] = SIGNING_ALG_HMAC_SHA256;
+/*	pneg_ctxt->SigningAlgorithms[1] = SIGNING_ALG_AES_GMAC; */
+
+	ctxt_len = DIV_ROUND_UP(sizeof(struct smb2_signing_capabilities), 8) * 8;
+	return ctxt_len;
+}
+
 static void
 build_encrypt_ctxt(struct smb2_encryption_neg_context *pneg_ctxt)
 {
@@ -527,7 +544,13 @@ assemble_neg_contexts(struct smb2_negotiate_req *req,
 	pneg_ctxt += ctxt_len;
 
 	build_encrypt_ctxt((struct smb2_encryption_neg_context *)pneg_ctxt);
+	/* TODO change line below to have build_encrypt_ctxt return the len */
 	ctxt_len = DIV_ROUND_UP(sizeof(struct smb2_encryption_neg_context), 8) * 8;
+	*total_len += ctxt_len;
+	pneg_ctxt += ctxt_len;
+
+	ctxt_len = build_signing_ctxt((struct smb2_signing_capabilities *)pneg_ctxt);
+
 	*total_len += ctxt_len;
 	pneg_ctxt += ctxt_len;
 
@@ -539,9 +562,9 @@ assemble_neg_contexts(struct smb2_negotiate_req *req,
 				8) * 8;
 		*total_len += ctxt_len;
 		pneg_ctxt += ctxt_len;
-		req->NegotiateContextCount = cpu_to_le16(5);
+		req->NegotiateContextCount = cpu_to_le16(6);
 	} else
-		req->NegotiateContextCount = cpu_to_le16(4);
+		req->NegotiateContextCount = cpu_to_le16(5);
 
 	ctxt_len = build_netname_ctxt((struct smb2_netname_neg_context *)pneg_ctxt,
 					server->hostname);
