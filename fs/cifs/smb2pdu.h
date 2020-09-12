@@ -297,6 +297,9 @@ struct smb2_negotiate_req {
 #define SMB2_ENCRYPTION_CAPABILITIES		cpu_to_le16(2)
 #define SMB2_COMPRESSION_CAPABILITIES		cpu_to_le16(3)
 #define SMB2_NETNAME_NEGOTIATE_CONTEXT_ID	cpu_to_le16(5)
+#define SMB2_TRANSPORT_CAPABILITIES		cpu_to_le16(6)
+#define SMB2_RDMA_TRANSFORM_CAPABILITIES	cpu_to_le16(7)
+#define SMB2_SIGNING_CAPABILITIES		cpu_to_le16(8)
 #define SMB2_POSIX_EXTENSIONS_AVAILABLE		cpu_to_le16(0x100)
 
 struct smb2_neg_context {
@@ -365,10 +368,25 @@ struct smb2_compression_capabilities_context {
  * Its struct simply contains NetName, an array of Unicode characters
  */
 struct smb2_netname_neg_context {
-	__le16	ContextType; /* 0x100 */
+	__le16	ContextType; /* 5 */
 	__le16	DataLength;
 	__le32	Reserved;
 	__le16	NetName[]; /* hostname of target converted to UCS-2 */
+} __packed;
+
+/*
+ * For rdma_transform_capabilities context see MS-SMB2 2.2.3.1.6
+ */
+ #define SMB2_RDMA_TRANSFORM_NONE	cpu_to_le32(0x0000)
+ #define SMB2_RDMA_TRANSFORM_ENCRYPTION	cpu_to_le32(0x0001)
+
+ struct smb2_rdma_transform_capabilities {
+	__le16	ContextType; /* 7 */
+	__le16	DataLength;
+	__le16	TransformCount;
+	__u16	Reserved1;
+	__u32	Reserved2;
+	__le16	RDMATranformIds[];
 } __packed;
 
 #define POSIX_CTXT_DATA_LEN	16
@@ -1176,10 +1194,14 @@ struct smb2_flush_rsp {
 #define SMB2_READFLAG_READ_UNBUFFERED	0x01
 #define SMB2_READFLAG_REQUEST_COMPRESSED 0x02 /* See MS-SMB2 2.2.19 */
 
-/* Channel field for read and write: exactly one of following flags can be set*/
+/*
+ * Channel field for read and write: exactly one of following flags
+ * can be set, the latter two are only valid for Write requests
+ */
 #define SMB2_CHANNEL_NONE	cpu_to_le32(0x00000000)
 #define SMB2_CHANNEL_RDMA_V1	cpu_to_le32(0x00000001) /* SMB3 or later */
 #define SMB2_CHANNEL_RDMA_V1_INVALIDATE cpu_to_le32(0x00000002) /* >= SMB3.02 */
+#define SMB2_CHANNEL_RDMA_TRANSFORM cpu_to_le32(0x00000003) /* SMB3.1.1 or later */
 
 /* SMB2 read request without RFC1001 length at the beginning */
 struct smb2_read_plain_req {
@@ -1199,6 +1221,10 @@ struct smb2_read_plain_req {
 	__u8   Buffer[1];
 } __packed;
 
+/* Read response flags see - MS-SMB2 2.2.20 */
+#define SMB2_READFLAG_RESPONSE_NONE		0x00000000
+#define SMB2_READFLAG_RESPONSE_RDMA_TRANSFORM	0x00000001
+
 struct smb2_read_rsp {
 	struct smb2_sync_hdr sync_hdr;
 	__le16 StructureSize; /* Must be 17 */
@@ -1206,7 +1232,7 @@ struct smb2_read_rsp {
 	__u8   Reserved;
 	__le32 DataLength;
 	__le32 DataRemaining;
-	__u32  Reserved2;
+	__le32 Flags;
 	__u8   Buffer[1];
 } __packed;
 
