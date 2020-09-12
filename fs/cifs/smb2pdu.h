@@ -389,6 +389,19 @@ struct smb2_netname_neg_context {
 	__le16	RDMATranformIds[];
 } __packed;
 
+/* Signing algorithms */
+#define SIGNING_ALG_HMAC_SHA256	0
+#define SIGNING_ALG_AES_CMAC	1
+#define SIGNING_ALG_AES_GMAC	2
+
+ struct smb2_signing_capabilities {
+	__le16	ContextType; /* 8 */
+	__le16	DataLength;
+	__u32	Reserved;
+	__le16	SigningAlgorithmCount;
+	__le16	SigningAlgorithms[];
+} __packed;
+
 #define POSIX_CTXT_DATA_LEN	16
 struct smb2_posix_neg_context {
 	__le16	ContextType; /* 0x100 */
