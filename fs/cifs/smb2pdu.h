@@ -383,6 +383,7 @@ struct smb2_netname_neg_context {
  struct smb2_rdma_transform_capabilities {
 	__le16	ContextType; /* 7 */
 	__le16	DataLength;
+	__u32	Reserved;
 	__le16	TransformCount;
 	__u16	Reserved1;
 	__u32	Reserved2;
