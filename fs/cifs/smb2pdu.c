@@ -688,6 +688,8 @@ static int smb311_decode_neg_context(struct smb2_negotiate_rsp *rsp,
 				(struct smb2_compression_capabilities_context *)pctx);
 		else if (pctx->ContextType == SMB2_POSIX_EXTENSIONS_AVAILABLE)
 			server->posix_ext_supported = true;
+		else if (pctx->ContextType == SMB2_SIGNING_CAPABILITIES)
+			cifs_dbg(VFS, "found smb2 signing cap in neg response\n"); /* BB FIXME - add decode_signing_ctx() */
 		else
 			cifs_server_dbg(VFS, "unknown negcontext of type %d ignored\n",
 				le16_to_cpu(pctx->ContextType));
