@@ -400,7 +400,7 @@ struct smb2_netname_neg_context {
 	__le16	DataLength;
 	__u32	Reserved;
 	__le16	SigningAlgorithmCount;
-	__le16	SigningAlgorithms[];
+	__le16	SigningAlgorithms[1]; /* FIXME - add GMAC */
 } __packed;
 
 #define POSIX_CTXT_DATA_LEN	16
