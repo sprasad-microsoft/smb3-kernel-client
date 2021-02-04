@@ -4287,6 +4287,13 @@ cifs_readpages_copy_into_pages(struct TCP_Server_Info *server,
 	return readpages_fill_pages(server, rdata, iter, iter->count);
 }
 
+static bool cifs_is_cache_enabled(struct inode *inode)
+{
+	struct fscache_cookie *cookie = cifs_inode_cookie(inode);
+
+	return fscache_cookie_enabled(cookie) && !hlist_empty(&cookie->backing_objects);
+}
+
 static int
 readpages_get_pages(struct address_space *mapping, struct list_head *page_list,
 		    unsigned int rsize, struct list_head *tmplist,
