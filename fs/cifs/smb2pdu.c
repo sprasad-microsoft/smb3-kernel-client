@@ -249,12 +249,6 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon,
 	nls_codepage = load_nls_default();
 
 	/*
-	 * need to prevent multiple threads trying to simultaneously reconnect
-	 * the same SMB session
-	 */
-	mutex_lock(&ses->session_mutex);
-
-	/*
 	 * Recheck after acquire mutex. If another thread is negotiating
 	 * and the server never sends an answer the socket will be closed
 	 * and tcpStatus set to reconnect.
@@ -263,7 +257,6 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon,
 	if (server->tcpStatus == CifsNeedReconnect) {
 		spin_unlock(&cifs_tcp_ses_lock);
 		rc = -EHOSTDOWN;
-		mutex_unlock(&ses->session_mutex);
 		goto out;
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
@@ -281,23 +274,23 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon,
 			goto skip_sess_setup;
 
 		rc = -EHOSTDOWN;
-		mutex_unlock(&ses->session_mutex);
 		goto out;
 	}
 	spin_unlock(&ses->chan_lock);
 
+	mutex_lock(&ses->session_mutex);
 	rc = cifs_negotiate_protocol(0, ses, server);
 	if (!rc) {
 		rc = cifs_setup_session(0, ses, server, nls_codepage);
 		if ((rc == -EACCES) && !tcon->retry) {
-			rc = -EHOSTDOWN;
 			mutex_unlock(&ses->session_mutex);
+			rc = -EHOSTDOWN;
 			goto failed;
 		}
 	}
 
 	if (rc || !tcon->need_reconnect) {
-		mutex_unlock(&tcon->ses->session_mutex);
+		mutex_unlock(&ses->session_mutex);
 		goto out;
 	}
 
@@ -307,7 +300,7 @@ skip_sess_setup:
 		tcon->need_reopen_files = true;
 
 	rc = cifs_tree_connect(0, tcon, nls_codepage);
-	mutex_unlock(&tcon->ses->session_mutex);
+	mutex_unlock(&ses->session_mutex);
 
 	cifs_dbg(FYI, "reconnect tcon rc = %d\n", rc);
 	if (rc) {
@@ -1394,6 +1387,7 @@ SMB2_sess_establish_session(struct SMB2_sess_data *sess_data)
 
 	/* Even if one channel is active, session is in good state */
 	spin_lock(&cifs_tcp_ses_lock);
+	server->tcpStatus = CifsGood;
 	ses->status = CifsGood;
 	spin_unlock(&cifs_tcp_ses_lock);
 
