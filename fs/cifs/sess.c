@@ -309,7 +309,7 @@ cifs_ses_add_channel(struct cifs_sb_info *cifs_sb, struct cifs_ses *ses,
 
 	mutex_lock(&ses->session_mutex);
 	spin_lock(&ses->chan_lock);
-	chan = ses->binding_chan = &ses->chans[ses->chan_count];
+	chan = &ses->chans[ses->chan_count];
 	chan->server = chan_server;
 	if (IS_ERR(chan->server)) {
 		rc = PTR_ERR(chan->server);
@@ -317,6 +317,12 @@ cifs_ses_add_channel(struct cifs_sb_info *cifs_sb, struct cifs_ses *ses,
 		spin_unlock(&ses->chan_lock);
 		goto out;
 	}
+	ses->chan_count++;
+	atomic_set(&ses->chan_seq, 0);
+
+	/* Mark this channel as needing connect/setup */
+	cifs_chan_set_need_reconnect(ses, chan->server);
+
 	spin_unlock(&ses->chan_lock);
 
 	/*
@@ -330,41 +336,17 @@ cifs_ses_add_channel(struct cifs_sb_info *cifs_sb, struct cifs_ses *ses,
 		goto out;
 	}
 
-	ses->binding = true;
-	rc = cifs_negotiate_protocol(xid, ses);
-	if (rc)
-		goto out;
-
-	rc = cifs_setup_session(xid, ses, cifs_sb->local_nls);
-	if (rc)
-		goto out;
-
-	/* success, put it on the list
-	 * XXX: sharing ses between 2 tcp servers is not possible, the
-	 * way "internal" linked lists works in linux makes element
-	 * only able to belong to one list
-	 *
-	 * the binding session is already established so the rest of
-	 * the code should be able to look it up, no need to add the
-	 * ses to the new server.
-	 */
-
-	spin_lock(&ses->chan_lock);
-	ses->chan_count++;
-	atomic_set(&ses->chan_seq, 0);
-
-	/* Mark this channel as needing connect/setup */
-	cifs_chan_set_need_reconnect(ses, chan->server);
-	spin_unlock(&ses->chan_lock);
+	rc = cifs_negotiate_protocol(xid, ses, chan->server);
+	if (!rc)
+		rc = cifs_setup_session(xid, ses, chan->server, cifs_sb->local_nls);
 
 out:
-	ses->binding = false;
-	ses->binding_chan = NULL;
-
 	if (rc && chan->server) {
+		spin_lock(&ses->chan_lock);
 		/* we rely on all bits beyond chan_count to be clear */
 		cifs_chan_clear_need_reconnect(ses, chan->server);
 		ses->chan_count--;
+		spin_unlock(&ses->chan_lock);
 	}
 
 	mutex_unlock(&ses->session_mutex);
@@ -375,7 +357,9 @@ out:
 	return rc;
 }
 
-static __u32 cifs_ssetup_hdr(struct cifs_ses *ses, SESSION_SETUP_ANDX *pSMB)
+static __u32 cifs_ssetup_hdr(struct cifs_ses *ses,
+			     struct TCP_Server_Info *server,
+			     SESSION_SETUP_ANDX *pSMB)
 {
 	__u32 capabilities = 0;
 
@@ -388,7 +372,7 @@ static __u32 cifs_ssetup_hdr(struct cifs_ses *ses, SESSION_SETUP_ANDX *pSMB)
 	pSMB->req.MaxBufferSize = cpu_to_le16(min_t(u32,
 					CIFSMaxBufSize + MAX_CIFS_HDR_SIZE - 4,
 					USHRT_MAX));
-	pSMB->req.MaxMpxCount = cpu_to_le16(ses->server->maxReq);
+	pSMB->req.MaxMpxCount = cpu_to_le16(server->maxReq);
 	pSMB->req.VcNumber = cpu_to_le16(1);
 
 	/* Now no need to set SMBFLG_CASELESS or obsolete CANONICAL PATH */
@@ -399,7 +383,7 @@ static __u32 cifs_ssetup_hdr(struct cifs_ses *ses, SESSION_SETUP_ANDX *pSMB)
 	capabilities = CAP_LARGE_FILES | CAP_NT_SMBS | CAP_LEVEL_II_OPLOCKS |
 			CAP_LARGE_WRITE_X | CAP_LARGE_READ_X;
 
-	if (ses->server->sign)
+	if (server->sign)
 		pSMB->req.hdr.Flags2 |= SMBFLG2_SECURITY_SIGNATURE;
 
 	if (ses->capabilities & CAP_UNICODE) {
@@ -683,9 +667,9 @@ int decode_ntlmssp_challenge(char *bcc_ptr, int blob_len,
 /* We do not malloc the blob, it is passed in pbuffer, because
    it is fixed size, and small, making this approach cleaner */
 void build_ntlmssp_negotiate_blob(unsigned char *pbuffer,
-					 struct cifs_ses *ses)
+					 struct cifs_ses *ses,
+					 struct TCP_Server_Info *server)
 {
-	struct TCP_Server_Info *server = cifs_ses_server(ses);
 	NEGOTIATE_MESSAGE *sec_blob = (NEGOTIATE_MESSAGE *)pbuffer;
 	__u32 flags;
 
@@ -736,6 +720,7 @@ static int size_of_ntlmssp_blob(struct cifs_ses *ses)
 int build_ntlmssp_auth_blob(unsigned char **pbuffer,
 					u16 *buflen,
 				   struct cifs_ses *ses,
+				   struct TCP_Server_Info *server,
 				   const struct nls_table *nls_cp)
 {
 	int rc;
@@ -766,9 +751,9 @@ int build_ntlmssp_auth_blob(unsigned char **pbuffer,
 		NTLMSSP_NEGOTIATE_128 | NTLMSSP_NEGOTIATE_UNICODE |
 		NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_NEGOTIATE_EXTENDED_SEC |
 		NTLMSSP_NEGOTIATE_SEAL;
-	if (ses->server->sign)
+	if (server->sign)
 		flags |= NTLMSSP_NEGOTIATE_SIGN;
-	if (!ses->server->session_estab || ses->ntlmssp->sesskey_per_smbsess)
+	if (!server->session_estab || ses->ntlmssp->sesskey_per_smbsess)
 		flags |= NTLMSSP_NEGOTIATE_KEY_XCH;
 
 	tmp = *pbuffer + sizeof(AUTHENTICATE_MESSAGE);
@@ -895,6 +880,7 @@ cifs_select_sectype(struct TCP_Server_Info *server, enum securityEnum requested)
 struct sess_data {
 	unsigned int xid;
 	struct cifs_ses *ses;
+	struct TCP_Server_Info *server;
 	struct nls_table *nls_cp;
 	void (*func)(struct sess_data *);
 	int result;
@@ -961,35 +947,34 @@ static int
 sess_establish_session(struct sess_data *sess_data)
 {
 	struct cifs_ses *ses = sess_data->ses;
+	struct TCP_Server_Info *server = sess_data->server;
 
-	mutex_lock(&ses->server->srv_mutex);
-	if (!ses->server->session_estab) {
-		if (ses->server->sign) {
-			ses->server->session_key.response =
+	mutex_lock(&server->srv_mutex);
+	if (!server->session_estab) {
+		if (server->sign) {
+			server->session_key.response =
 				kmemdup(ses->auth_key.response,
 				ses->auth_key.len, GFP_KERNEL);
-			if (!ses->server->session_key.response) {
-				mutex_unlock(&ses->server->srv_mutex);
+			if (!server->session_key.response) {
+				mutex_unlock(&server->srv_mutex);
 				return -ENOMEM;
 			}
-			ses->server->session_key.len =
+			server->session_key.len =
 						ses->auth_key.len;
 		}
-		ses->server->sequence_number = 0x2;
-		ses->server->session_estab = true;
+		server->sequence_number = 0x2;
+		server->session_estab = true;
 	}
-	mutex_unlock(&ses->server->srv_mutex);
+	mutex_unlock(&server->srv_mutex);
 
 	cifs_dbg(FYI, "CIFS session established successfully\n");
-	if (ses->binding)
-		cifs_chan_clear_need_reconnect(ses, ses->binding_chan->server);
-	else
-		cifs_chan_clear_need_reconnect(ses, ses->server);
+	spin_lock(&ses->chan_lock);
+	cifs_chan_clear_need_reconnect(ses, server);
+	spin_unlock(&ses->chan_lock);
 
-	/* keep existing ses state if binding */
+	/* Even if one channel is active, session is in good state */
 	spin_lock(&GlobalMid_Lock);
-	if (!ses->binding)
-		ses->status = CifsGood;
+	ses->status = CifsGood;
 	spin_unlock(&GlobalMid_Lock);
 
 	return 0;
@@ -1025,6 +1010,7 @@ sess_auth_ntlmv2(struct sess_data *sess_data)
 	SESSION_SETUP_ANDX *pSMB;
 	char *bcc_ptr;
 	struct cifs_ses *ses = sess_data->ses;
+	struct TCP_Server_Info *server = sess_data->server;
 	__u32 capabilities;
 	__u16 bytes_remaining;
 
@@ -1036,7 +1022,7 @@ sess_auth_ntlmv2(struct sess_data *sess_data)
 
 	pSMB = (SESSION_SETUP_ANDX *)sess_data->iov[0].iov_base;
 	bcc_ptr = sess_data->iov[2].iov_base;
-	capabilities = cifs_ssetup_hdr(ses, pSMB);
+	capabilities = cifs_ssetup_hdr(ses, server, pSMB);
 
 	pSMB->req_no_secext.Capabilities = cpu_to_le32(capabilities);
 
@@ -1134,6 +1120,7 @@ sess_auth_kerberos(struct sess_data *sess_data)
 	SESSION_SETUP_ANDX *pSMB;
 	char *bcc_ptr;
 	struct cifs_ses *ses = sess_data->ses;
+	struct TCP_Server_Info *server = sess_data->server;
 	__u32 capabilities;
 	__u16 bytes_remaining;
 	struct key *spnego_key = NULL;
@@ -1148,9 +1135,9 @@ sess_auth_kerberos(struct sess_data *sess_data)
 
 	pSMB = (SESSION_SETUP_ANDX *)sess_data->iov[0].iov_base;
 	bcc_ptr = sess_data->iov[2].iov_base;
-	capabilities = cifs_ssetup_hdr(ses, pSMB);
+	capabilities = cifs_ssetup_hdr(ses, server, pSMB);
 
-	spnego_key = cifs_get_spnego_key(ses);
+	spnego_key = cifs_get_spnego_key(ses, server);
 	if (IS_ERR(spnego_key)) {
 		rc = PTR_ERR(spnego_key);
 		spnego_key = NULL;
@@ -1274,12 +1261,13 @@ _sess_auth_rawntlmssp_assemble_req(struct sess_data *sess_data)
 {
 	SESSION_SETUP_ANDX *pSMB;
 	struct cifs_ses *ses = sess_data->ses;
+	struct TCP_Server_Info *server = sess_data->server;
 	__u32 capabilities;
 	char *bcc_ptr;
 
 	pSMB = (SESSION_SETUP_ANDX *)sess_data->iov[0].iov_base;
 
-	capabilities = cifs_ssetup_hdr(ses, pSMB);
+	capabilities = cifs_ssetup_hdr(ses, server, pSMB);
 	if ((pSMB->req.hdr.Flags2 & SMBFLG2_UNICODE) == 0) {
 		cifs_dbg(VFS, "NTLMSSP requires Unicode support\n");
 		return -ENOSYS;
@@ -1313,6 +1301,7 @@ sess_auth_rawntlmssp_negotiate(struct sess_data *sess_data)
 	struct smb_hdr *smb_buf;
 	SESSION_SETUP_ANDX *pSMB;
 	struct cifs_ses *ses = sess_data->ses;
+	struct TCP_Server_Info *server = sess_data->server;
 	__u16 bytes_remaining;
 	char *bcc_ptr;
 	u16 blob_len;
@@ -1338,7 +1327,7 @@ sess_auth_rawntlmssp_negotiate(struct sess_data *sess_data)
 	pSMB = (SESSION_SETUP_ANDX *)sess_data->iov[0].iov_base;
 
 	/* Build security blob before we assemble the request */
-	build_ntlmssp_negotiate_blob(pSMB->req.SecurityBlob, ses);
+	build_ntlmssp_negotiate_blob(pSMB->req.SecurityBlob, ses, server);
 	sess_data->iov[1].iov_len = sizeof(NEGOTIATE_MESSAGE);
 	sess_data->iov[1].iov_base = pSMB->req.SecurityBlob;
 	pSMB->req.SecurityBlobLength = cpu_to_le16(sizeof(NEGOTIATE_MESSAGE));
@@ -1409,6 +1398,7 @@ sess_auth_rawntlmssp_authenticate(struct sess_data *sess_data)
 	struct smb_hdr *smb_buf;
 	SESSION_SETUP_ANDX *pSMB;
 	struct cifs_ses *ses = sess_data->ses;
+	struct TCP_Server_Info *server = sess_data->server;
 	__u16 bytes_remaining;
 	char *bcc_ptr;
 	unsigned char *ntlmsspblob = NULL;
@@ -1425,7 +1415,8 @@ sess_auth_rawntlmssp_authenticate(struct sess_data *sess_data)
 	pSMB = (SESSION_SETUP_ANDX *)sess_data->iov[0].iov_base;
 	smb_buf = (struct smb_hdr *)pSMB;
 	rc = build_ntlmssp_auth_blob(&ntlmsspblob,
-					&blob_len, ses, sess_data->nls_cp);
+					&blob_len, ses, server,
+					sess_data->nls_cp);
 	if (rc)
 		goto out_free_ntlmsspblob;
 	sess_data->iov[1].iov_len = blob_len;
@@ -1509,11 +1500,13 @@ out:
 	sess_data->result = rc;
 }
 
-static int select_sec(struct cifs_ses *ses, struct sess_data *sess_data)
+static int select_sec(struct sess_data *sess_data)
 {
 	int type;
+	struct cifs_ses *ses = sess_data->ses;
+	struct TCP_Server_Info *server = sess_data->server;
 
-	type = cifs_select_sectype(ses->server, ses->sectype);
+	type = cifs_select_sectype(server, ses->sectype);
 	cifs_dbg(FYI, "sess setup type %d\n", type);
 	if (type == Unspecified) {
 		cifs_dbg(VFS, "Unable to select appropriate authentication method!\n");
@@ -1544,7 +1537,8 @@ static int select_sec(struct cifs_ses *ses, struct sess_data *sess_data)
 }
 
 int CIFS_SessSetup(const unsigned int xid, struct cifs_ses *ses,
-		    const struct nls_table *nls_cp)
+		   struct TCP_Server_Info *server,
+		   const struct nls_table *nls_cp)
 {
 	int rc = 0;
 	struct sess_data *sess_data;
@@ -1558,14 +1552,15 @@ int CIFS_SessSetup(const unsigned int xid, struct cifs_ses *ses,
 	if (!sess_data)
 		return -ENOMEM;
 
-	rc = select_sec(ses, sess_data);
-	if (rc)
-		goto out;
-
 	sess_data->xid = xid;
 	sess_data->ses = ses;
+	sess_data->server = server;
 	sess_data->buf0_type = CIFS_NO_BUFFER;
 	sess_data->nls_cp = (struct nls_table *) nls_cp;
+
+	rc = select_sec(sess_data);
+	if (rc)
+		goto out;
 
 	while (sess_data->func)
 		sess_data->func(sess_data);
