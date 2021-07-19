@@ -978,9 +978,9 @@ sess_establish_session(struct sess_data *sess_data)
 	spin_unlock(&ses->chan_lock);
 
 	/* Even if one channel is active, session is in good state */
-	spin_lock(&GlobalMid_Lock);
+	spin_lock(&cifs_tcp_ses_lock);
 	ses->status = CifsGood;
-	spin_unlock(&GlobalMid_Lock);
+	spin_unlock(&cifs_tcp_ses_lock);
 
 	return 0;
 }
