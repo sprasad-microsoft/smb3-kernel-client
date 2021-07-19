@@ -206,9 +206,14 @@ static inline int reconn_setup_dfs_targets(struct cifs_sb_info *cifs_sb,
  * mark all smb sessions as reconnecting for tcp session
  * reconnect tcp session
  * wake up waiters on reconnection? - (not needed currently)
+ *
+ * if mark_smb_session is passed as true, unconditionally mark
+ * the smb session (and tcon) for reconnect as well. This value
+ * doesn't really matter for non-multichannel scenario.
+ *
  */
 int
-cifs_reconnect(struct TCP_Server_Info *server)
+cifs_reconnect(struct TCP_Server_Info *server, bool mark_smb_session)
 {
 	int rc = 0;
 	unsigned int num_sessions = 0;
@@ -279,13 +284,16 @@ cifs_reconnect(struct TCP_Server_Info *server)
 		ses = list_entry(tmp, struct cifs_ses, smb_ses_list);
 
 		spin_lock(&ses->chan_lock);
-		if (cifs_chan_needs_reconnect(ses, server))
+		if (!mark_smb_session && cifs_chan_needs_reconnect(ses, server))
 			goto next_session;
 
-		cifs_chan_set_need_reconnect(ses, server);
+		if (mark_smb_session)
+			CIFS_SET_ALL_CHANS_NEED_RECONNECT(ses);
+		else
+			cifs_chan_set_need_reconnect(ses, server);
 
 		/* If all channels need reconnect, then tcon needs reconnect */
-		if (!CIFS_ALL_CHANS_NEED_RECONNECT(ses))
+		if (!mark_smb_session && !CIFS_ALL_CHANS_NEED_RECONNECT(ses))
 			goto next_session;
 
 		num_sessions++;
@@ -515,7 +523,7 @@ server_unresponsive(struct TCP_Server_Info *server)
 	    time_after(jiffies, server->lstrp + 3 * server->echo_interval)) {
 		cifs_server_dbg(VFS, "has not responded in %lu seconds. Reconnecting...\n",
 			 (3 * server->echo_interval) / HZ);
-		cifs_reconnect(server);
+		cifs_reconnect(server, false);
 		return true;
 	}
 
@@ -551,7 +559,7 @@ cifs_readv_from_socket(struct TCP_Server_Info *server, struct msghdr *smb_msg)
 
 		/* reconnect if no credits and no requests in flight */
 		if (zero_credits(server)) {
-			cifs_reconnect(server);
+			cifs_reconnect(server, false);
 			return -ECONNABORTED;
 		}
 
@@ -566,7 +574,7 @@ cifs_readv_from_socket(struct TCP_Server_Info *server, struct msghdr *smb_msg)
 			return -ESHUTDOWN;
 
 		if (server->tcpStatus == CifsNeedReconnect) {
-			cifs_reconnect(server);
+			cifs_reconnect(server, false);
 			return -ECONNABORTED;
 		}
 
@@ -585,7 +593,7 @@ cifs_readv_from_socket(struct TCP_Server_Info *server, struct msghdr *smb_msg)
 
 		if (length <= 0) {
 			cifs_dbg(FYI, "Received no data or error: %d\n", length);
-			cifs_reconnect(server);
+			cifs_reconnect(server, false);
 			return -ECONNABORTED;
 		}
 	}
@@ -664,11 +672,11 @@ is_smb_response(struct TCP_Server_Info *server, unsigned char type)
 		 * initialize frame).
 		 */
 		cifs_set_port((struct sockaddr *)&server->dstaddr, CIFS_PORT);
-		cifs_reconnect(server);
+		cifs_reconnect(server, true);
 		break;
 	default:
 		cifs_server_dbg(VFS, "RFC 1002 unknown response type 0x%x\n", type);
-		cifs_reconnect(server);
+		cifs_reconnect(server, true);
 	}
 
 	return false;
@@ -837,7 +845,7 @@ standard_receive3(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 	if (pdu_length > CIFSMaxBufSize + MAX_HEADER_SIZE(server) -
 		server->vals->header_preamble_size) {
 		cifs_server_dbg(VFS, "SMB response too long (%u bytes)\n", pdu_length);
-		cifs_reconnect(server);
+		cifs_reconnect(server, true);
 		return -ECONNABORTED;
 	}
 
@@ -884,7 +892,7 @@ cifs_handle_standard(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 
 	if (server->ops->is_session_expired &&
 	    server->ops->is_session_expired(buf)) {
-		cifs_reconnect(server);
+		cifs_reconnect(server, true);
 		return -1;
 	}
 
@@ -988,7 +996,7 @@ next_pdu:
 		    server->vals->header_preamble_size) {
 			cifs_server_dbg(VFS, "SMB response too short (%u bytes)\n",
 				 server->pdu_size);
-			cifs_reconnect(server);
+			cifs_reconnect(server, true);
 			continue;
 		}
 
@@ -1040,7 +1048,7 @@ next_pdu:
 		    server->ops->is_status_io_timeout(buf)) {
 			num_io_timeout++;
 			if (num_io_timeout > NUM_STATUS_IO_TIMEOUT) {
-				cifs_reconnect(server);
+				cifs_reconnect(server, false);
 				num_io_timeout = 0;
 				continue;
 			}
