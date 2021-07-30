@@ -1741,12 +1741,10 @@ void cifs_put_smb_ses(struct cifs_ses *ses)
 		spin_unlock(&cifs_tcp_ses_lock);
 		return;
 	}
-	spin_unlock(&cifs_tcp_ses_lock);
 
 	/* ses_count can never go negative */
 	WARN_ON(ses->ses_count < 0);
 
-	spin_lock(&cifs_tcp_ses_lock);
 	if (ses->status == CifsGood)
 		ses->status = CifsExiting;
 	spin_unlock(&cifs_tcp_ses_lock);
