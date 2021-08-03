@@ -1291,6 +1291,7 @@ static int smb3_fs_context_parse_param(struct fs_context *fc,
 		break;
 	case Opt_setuidfromacl:
 		ctx->setuidfromacl = 1;
+		ctx->mode_ace = 1;
 		break;
 	case Opt_strictsync:
 		ctx->nostrictsync = result.negated;
@@ -1303,6 +1304,7 @@ static int smb3_fs_context_parse_param(struct fs_context *fc,
 		break;
 	case Opt_modesid:
 		ctx->mode_ace = 1;
+		ctx->setuidfromacl = 1;
 		break;
 	case Opt_cifsacl:
 		ctx->cifs_acl = !result.negated;
