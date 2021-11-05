@@ -1400,13 +1400,22 @@ static int smb3_fs_context_parse_param(struct fs_context *fc,
 
 int smb3_init_fs_context(struct fs_context *fc)
 {
+	int rc;
 	struct smb3_fs_context *ctx;
 	char *nodename = utsname()->nodename;
 	int i;
 
 	ctx = kzalloc(sizeof(struct smb3_fs_context), GFP_KERNEL);
-	if (unlikely(!ctx))
-		return -ENOMEM;
+	if (unlikely(!ctx)) {
+		rc = -ENOMEM;
+		goto err_exit;
+	}
+
+	ctx->workstation_name = kmalloc(CIFS_MAX_WORKSTATION_LEN, GFP_KERNEL);
+	if (!ctx->workstation_name) {
+		rc = -ENOMEM;
+		goto err_exit;
+	}
 
 	/*
 	 * does not have to be perfect mapping since field is
@@ -1476,9 +1485,21 @@ int smb3_init_fs_context(struct fs_context *fc)
  *	struct sockaddr *dstaddr = (struct sockaddr *)&vol->dstaddr;
  */
 
+	snprintf(ctx->workstation_name, CIFS_MAX_WORKSTATION_LEN, "%s:%s",
+		 utsname()->nodename,
+		 utsname()->release);
+
 	fc->fs_private = ctx;
 	fc->ops = &smb3_fs_context_ops;
 	return 0;
+
+err_exit:
+	if (ctx) {
+		kfree(ctx->workstation_name);
+		kfree(ctx);
+	}
+
+	return rc;
 }
 
 void
@@ -1508,6 +1529,8 @@ smb3_cleanup_fs_context_contents(struct smb3_fs_context *ctx)
 	ctx->iocharset = NULL;
 	kfree(ctx->prepath);
 	ctx->prepath = NULL;
+	kfree(ctx->workstation_name);
+	ctx->workstation_name = NULL;
 }
 
 void

@@ -168,6 +168,7 @@ struct smb3_fs_context {
 	char *source;
 	char *UNC;
 	char *nodename;
+	char *workstation_name;
 	char *iocharset;  /* local code page for mapping to and from Unicode */
 	char source_rfc1001_name[RFC1001_NAME_LEN_WITH_NULL]; /* clnt nb name */
 	char target_rfc1001_name[RFC1001_NAME_LEN_WITH_NULL]; /* srvr nb name */

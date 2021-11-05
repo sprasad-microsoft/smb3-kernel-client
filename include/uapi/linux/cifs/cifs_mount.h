@@ -22,6 +22,6 @@
 #define CIFS_MAX_PASSWORD_LEN   512 /* Windows max seems to be 256 wide chars */
 #define CIFS_MAX_SHARE_LEN      256 /* reasonable max share name length */
 #define CIFS_NI_MAXHOST        1024 /* max host name length (256 * 4 bytes) */
-
+#define CIFS_MAX_WORKSTATION_LEN   256 /* reasonable max for client */
 
 #endif /* _CIFS_MOUNT_H */
