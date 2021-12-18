@@ -66,7 +66,7 @@ dns_resolve_server_name_to_ip(const char *unc, char **ip_addr, time64_t *expiry)
 
 	/* Perform the upcall */
 	rc = dns_query(current->nsproxy->net_ns, NULL, hostname, len,
-		       NULL, ip_addr, expiry, false);
+		       NULL, ip_addr, expiry, true);
 	if (rc < 0)
 		cifs_dbg(FYI, "%s: unable to resolve: %*.*s\n",
 			 __func__, len, len, hostname);
