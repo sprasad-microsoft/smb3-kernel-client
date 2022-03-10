@@ -404,8 +404,19 @@ static int smb2_plain_req_init(__le16 smb2_command, struct cifs_tcon *tcon,
 			       void **request_buf, unsigned int *total_len)
 {
 	int rc;
+	int retry_count = 0;
 
+retry_reconnect:
 	rc = smb2_reconnect(smb2_command, tcon, server);
+	if ((rc == -EHOSTDOWN || rc == -EAGAIN) &&
+	    retry_count++ < 5) {
+		/*
+		 * there's no point in leaking this error to userspace
+		 */
+		usleep_range(512, 2048);
+		goto retry_reconnect;
+	}
+
 	if (rc)
 		return rc;
 
