@@ -133,6 +133,7 @@ int cifs_sign_rqst(struct smb_rqst *rqst, struct TCP_Server_Info *server,
 	int rc = 0;
 	char smb_signature[20];
 	struct smb_hdr *cifs_pdu = (struct smb_hdr *)rqst->rq_iov[0].iov_base;
+	struct TCP_Server_Info *pserver;
 
 	if (rqst->rq_iov[0].iov_len != 4 ||
 	    rqst->rq_iov[0].iov_base + 4 != rqst->rq_iov[1].iov_base)
@@ -149,7 +150,9 @@ int cifs_sign_rqst(struct smb_rqst *rqst, struct TCP_Server_Info *server,
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
 
-	if (!server->session_estab) {
+	/* session_estab is maked only for primary channel */
+	pserver = CIFS_SERVER_IS_CHAN(server) ? server->primary_server : server;
+	if (!pserver->session_estab) {
 		memcpy(cifs_pdu->Signature.SecuritySignature, "BSRSPYL", 8);
 		return rc;
 	}
@@ -202,6 +205,7 @@ int cifs_verify_signature(struct smb_rqst *rqst,
 	char server_response_sig[8];
 	char what_we_think_sig_should_be[20];
 	struct smb_hdr *cifs_pdu = (struct smb_hdr *)rqst->rq_iov[0].iov_base;
+	struct TCP_Server_Info *pserver;
 
 	if (rqst->rq_iov[0].iov_len != 4 ||
 	    rqst->rq_iov[0].iov_base + 4 != rqst->rq_iov[1].iov_base)
@@ -210,7 +214,9 @@ int cifs_verify_signature(struct smb_rqst *rqst,
 	if (cifs_pdu == NULL || server == NULL)
 		return -EINVAL;
 
-	if (!server->session_estab)
+	/* session_estab is maked only for primary channel */
+	pserver = CIFS_SERVER_IS_CHAN(server) ? server->primary_server : server;
+	if (!pserver->session_estab)
 		return 0;
 
 	if (cifs_pdu->Command == SMB_COM_LOCKING_ANDX) {

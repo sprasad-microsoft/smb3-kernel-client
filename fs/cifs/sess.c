@@ -818,7 +818,7 @@ int build_ntlmssp_negotiate_blob(unsigned char **pbuffer,
 		NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_NEGOTIATE_EXTENDED_SEC |
 		NTLMSSP_NEGOTIATE_ALWAYS_SIGN | NTLMSSP_NEGOTIATE_SEAL |
 		NTLMSSP_NEGOTIATE_SIGN;
-	if (!server->session_estab || ses->ntlmssp->sesskey_per_smbsess)
+	if (!ses->server->session_estab || ses->ntlmssp->sesskey_per_smbsess)
 		flags |= NTLMSSP_NEGOTIATE_KEY_XCH;
 
 	tmp = *pbuffer + sizeof(NEGOTIATE_MESSAGE);
@@ -880,7 +880,7 @@ int build_ntlmssp_smb3_negotiate_blob(unsigned char **pbuffer,
 		NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_NEGOTIATE_EXTENDED_SEC |
 		NTLMSSP_NEGOTIATE_ALWAYS_SIGN | NTLMSSP_NEGOTIATE_SEAL |
 		NTLMSSP_NEGOTIATE_SIGN | NTLMSSP_NEGOTIATE_VERSION;
-	if (!server->session_estab || ses->ntlmssp->sesskey_per_smbsess)
+	if (!ses->server->session_estab || ses->ntlmssp->sesskey_per_smbsess)
 		flags |= NTLMSSP_NEGOTIATE_KEY_XCH;
 
 	sec_blob->Version.ProductMajorVersion = LINUX_VERSION_MAJOR;
@@ -1121,20 +1121,20 @@ sess_establish_session(struct sess_data *sess_data)
 	struct TCP_Server_Info *server = sess_data->server;
 
 	mutex_lock(&server->srv_mutex);
-	if (!server->session_estab) {
-		if (server->sign) {
-			server->session_key.response =
+	if (!ses->server->session_estab) {
+		if (ses->server->sign) {
+			ses->server->session_key.response =
 				kmemdup(ses->auth_key.response,
 				ses->auth_key.len, GFP_KERNEL);
-			if (!server->session_key.response) {
+			if (!ses->server->session_key.response) {
 				mutex_unlock(&server->srv_mutex);
 				return -ENOMEM;
 			}
-			server->session_key.len =
+			ses->server->session_key.len =
 						ses->auth_key.len;
 		}
-		server->sequence_number = 0x2;
-		server->session_estab = true;
+		ses->server->sequence_number = 0x2;
+		ses->server->session_estab = true;
 	}
 	mutex_unlock(&server->srv_mutex);
 

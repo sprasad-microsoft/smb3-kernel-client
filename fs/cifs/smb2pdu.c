@@ -1379,9 +1379,11 @@ SMB2_sess_establish_session(struct SMB2_sess_data *sess_data)
 			return rc;
 		}
 	}
-	if (!server->session_estab) {
-		server->sequence_number = 0x2;
-		server->session_estab = true;
+
+	/* session_estab is marked only for primary channel */
+	if (!ses->server->session_estab) {
+		ses->server->sequence_number = 0x2;
+		ses->server->session_estab = true;
 	}
 	mutex_unlock(&server->srv_mutex);
 

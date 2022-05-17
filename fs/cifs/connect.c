@@ -242,6 +242,7 @@ cifs_mark_tcp_ses_conns_for_reconnect(struct TCP_Server_Info *server,
 			goto next_session;
 
 		ses->ses_status = SES_NEED_RECON;
+		pserver->session_estab = false;
 
 		list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
 			tcon->need_reconnect = true;
@@ -278,7 +279,6 @@ cifs_abort_connection(struct TCP_Server_Info *server)
 		server->ssocket = NULL;
 	}
 	server->sequence_number = 0;
-	server->session_estab = false;
 	kfree(server->session_key.response);
 	server->session_key.response = NULL;
 	server->session_key.len = 0;

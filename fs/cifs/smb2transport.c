@@ -630,6 +630,8 @@ smb2_sign_rqst(struct smb_rqst *rqst, struct TCP_Server_Info *server)
 	struct smb2_sess_setup_req *ssr;
 	bool is_binding;
 	bool is_signed;
+	struct TCP_Server_Info *pserver =
+		CIFS_SERVER_IS_CHAN(server) ? server->primary_server : server;
 
 	shdr = (struct smb2_hdr *)rqst->rq_iov[0].iov_base;
 	ssr = (struct smb2_sess_setup_req *)shdr;
@@ -647,7 +649,7 @@ smb2_sign_rqst(struct smb_rqst *rqst, struct TCP_Server_Info *server)
 		return 0;
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
-	if (!is_binding && !server->session_estab) {
+	if (!is_binding && !pserver->session_estab) {
 		strncpy(shdr->Signature, "BSRSPYL", 8);
 		return 0;
 	}
@@ -664,12 +666,14 @@ smb2_verify_signature(struct smb_rqst *rqst, struct TCP_Server_Info *server)
 	char server_response_sig[SMB2_SIGNATURE_SIZE];
 	struct smb2_hdr *shdr =
 			(struct smb2_hdr *)rqst->rq_iov[0].iov_base;
+	struct TCP_Server_Info *pserver =
+		CIFS_SERVER_IS_CHAN(server) ? server->primary_server : server;
 
 	if ((shdr->Command == SMB2_NEGOTIATE) ||
 	    (shdr->Command == SMB2_SESSION_SETUP) ||
 	    (shdr->Command == SMB2_OPLOCK_BREAK) ||
 	    server->ignore_signature ||
-	    (!server->session_estab))
+	    (!pserver->session_estab))
 		return 0;
 
 	/*
