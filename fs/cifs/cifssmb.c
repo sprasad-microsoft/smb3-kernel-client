@@ -61,7 +61,6 @@ static struct {
 #define CIFS_NUM_PROT 1
 #endif /* CIFS_POSIX */
 
-
 /* reconnect the socket, tcon, and smb session if needed */
 static int
 cifs_reconnect_tcon(struct cifs_tcon *tcon, int smb_command)
