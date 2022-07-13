@@ -374,7 +374,6 @@ static void cifsFileInfo_put_final(struct cifsFileInfo *cifs_file)
 	struct inode *inode = d_inode(cifs_file->dentry);
 	struct cifsInodeInfo *cifsi = CIFS_I(inode);
 	struct cifsLockInfo *li, *tmp;
-	struct super_block *sb = inode->i_sb;
 
 	/*
 	 * Delete any outstanding lock records. We'll lose them when the file
@@ -391,8 +390,6 @@ static void cifsFileInfo_put_final(struct cifsFileInfo *cifs_file)
 	up_write(&cifsi->lock_sem);
 
 	cifs_put_tlink(cifs_file->tlink);
-	dput(cifs_file->dentry);
-	cifs_sb_deactive(sb);
 	kfree(cifs_file);
 }
 
@@ -568,6 +565,11 @@ int cifs_open(struct inode *inode, struct file *file)
 			spin_lock(&CIFS_I(inode)->deferred_lock);
 			cifs_del_deferred_close(cfile);
 			spin_unlock(&CIFS_I(inode)->deferred_lock);
+
+			/* update vfs references */
+			cfile->dentry = dget(file_dentry(file));
+			cifs_sb_active(inode->i_sb);
+
 			goto use_cache;
 		} else {
 			_cifsFileInfo_put(cfile, true, false);
@@ -879,6 +881,7 @@ int cifs_close(struct inode *inode, struct file *file)
 	struct cifsFileInfo *cfile;
 	struct cifsInodeInfo *cinode = CIFS_I(inode);
 	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
+	struct super_block *sb = inode->i_sb;
 	struct cifs_deferred_close *dclose;
 
 	cifs_fscache_unuse_inode_cookie(inode, file->f_mode & FMODE_WRITE);
@@ -911,7 +914,7 @@ int cifs_close(struct inode *inode, struct file *file)
 						&cfile->deferred, cifs_sb->ctx->acregmax);
 				cfile->deferred_close_scheduled = true;
 				spin_unlock(&cinode->deferred_lock);
-				return 0;
+				goto out;
 			}
 			spin_unlock(&cinode->deferred_lock);
 			_cifsFileInfo_put(cfile, true, false);
@@ -920,6 +923,10 @@ int cifs_close(struct inode *inode, struct file *file)
 			kfree(dclose);
 		}
 	}
+
+out:
+	dput(cfile->dentry);
+	cifs_sb_deactive(sb);
 
 	/* return code from the ->release op is always ignored */
 	return 0;

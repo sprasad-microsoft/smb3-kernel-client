@@ -262,7 +262,8 @@ static void cifs_kill_sb(struct super_block *sb)
 	struct tcon_link *tlink;
 
 	/*
-	 * We ned to release all dentries for the cached directories
+	 * We ned to release all open file handles
+	 * and dentries for the cached directories
 	 * before we kill the sb.
 	 */
 	if (cifs_sb->root) {
@@ -271,6 +272,9 @@ static void cifs_kill_sb(struct super_block *sb)
 			tcon = tlink_tcon(tlink);
 			if (IS_ERR(tcon))
 				continue;
+
+			cifs_close_all_deferred_files(tcon);
+
 			cfid = &tcon->crfid;
 			mutex_lock(&cfid->fid_mutex);
 			if (cfid->dentry) {
