@@ -4392,7 +4392,6 @@ static void cifs_readahead(struct readahead_control *ractl)
 	pid_t pid;
 	unsigned int xid, nr_pages, last_batch_size = 0;
 	pgoff_t next_cached = ULONG_MAX;
-	bool caching = false;
 
 	xid = get_xid();
 
