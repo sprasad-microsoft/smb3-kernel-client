@@ -119,10 +119,9 @@ typedef void (*netfs_io_terminated_t)(void *priv, ssize_t transferred_or_error,
 				      bool was_async);
 
 /*
- * Per-inode context.  This wraps the VFS inode.
+ * Per-inode description.  This must be directly after the inode struct.
  */
-struct netfs_inode {
-	struct inode		inode;		/* The VFS inode */
+struct netfs_i_context {
 	const struct netfs_request_ops *ops;
 #if IS_ENABLED(CONFIG_FSCACHE)
 	struct fscache_cookie	*cache;
@@ -258,7 +257,7 @@ struct netfs_cache_ops {
 	 * boundary as appropriate.
 	 */
 	enum netfs_io_source (*prepare_read)(struct netfs_io_subrequest *subreq,
-					     loff_t i_size);
+					       loff_t i_size);
 
 	/* Prepare a write operation, working out what part of the write we can
 	 * actually do.
@@ -291,15 +290,15 @@ extern void netfs_put_subrequest(struct netfs_io_subrequest *subreq,
 extern void netfs_stats_show(struct seq_file *);
 
 /**
- * netfs_inode - Get the netfs inode context from the inode
+ * netfs_i_context - Get the netfs inode context from the inode
  * @inode: The inode to query
  *
  * Get the netfs lib inode context from the network filesystem's inode.  The
  * context struct is expected to directly follow on from the VFS inode struct.
  */
-static inline struct netfs_inode *netfs_inode(struct inode *inode)
+static inline struct netfs_i_context *netfs_i_context(struct inode *inode)
 {
-	return container_of(inode, struct netfs_inode, inode);
+	return (void *)inode + sizeof(*inode);
 }
 
 /**

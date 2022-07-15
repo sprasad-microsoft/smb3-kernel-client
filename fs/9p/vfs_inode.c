@@ -234,7 +234,7 @@ struct inode *v9fs_alloc_inode(struct super_block *sb)
 	v9inode->writeback_fid = NULL;
 	v9inode->cache_validity = 0;
 	mutex_init(&v9inode->v_mutex);
-	return &v9inode->netfs.inode;
+	return &v9inode->vfs_inode;
 }
 
 /**

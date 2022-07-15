@@ -37,30 +37,29 @@ The network filesystem helper library needs a place to store a bit of state for
 its use on each netfs inode it is helping to manage.  To this end, a context
 structure is defined::
 
-	struct netfs_inode {
-		struct inode inode;
+	struct netfs_i_context {
 		const struct netfs_request_ops *ops;
-		struct fscache_cookie *cache;
+		struct fscache_cookie	*cache;
 	};
 
-A network filesystem that wants to use netfs lib must place one of these in its
-inode wrapper struct instead of the VFS ``struct inode``.  This can be done in
-a way similar to the following::
+A network filesystem that wants to use netfs lib must place one of these
+directly after the VFS ``struct inode`` it allocates, usually as part of its
+own struct.  This can be done in a way similar to the following::
 
 	struct my_inode {
-		struct netfs_inode netfs; /* Netfslib context and vfs inode */
+		struct {
+			/* These must be contiguous */
+			struct inode		vfs_inode;
+			struct netfs_i_context  netfs_ctx;
+		};
 		...
 	};
 
-This allows netfslib to find its state by using ``container_of()`` from the
-inode pointer, thereby allowing the netfslib helper functions to be pointed to
-directly by the VFS/VM operation tables.
+This allows netfslib to find its state by simple offset from the inode pointer,
+thereby allowing the netfslib helper functions to be pointed to directly by the
+VFS/VM operation tables.
 
 The structure contains the following fields:
-
- * ``inode``
-
-   The VFS inode structure.
 
  * ``ops``
 
@@ -82,9 +81,11 @@ set the operations table pointer::
 	void netfs_inode_init(struct netfs_inode *ctx,
 			      const struct netfs_request_ops *ops);
 
-then a function to cast from the VFS inode structure to the netfs context::
+then two functions to cast between the VFS inode structure and the netfs
+context::
 
-	struct netfs_inode *netfs_node(struct inode *inode);
+	struct netfs_i_context *netfs_i_context(struct inode *inode);
+	struct inode *netfs_inode(struct netfs_i_context *ctx);
 
 and finally, a function to get the cache cookie pointer from the context
 attached to an inode (or NULL if fscache is disabled)::

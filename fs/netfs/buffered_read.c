@@ -155,7 +155,7 @@ static void netfs_rreq_expand(struct netfs_io_request *rreq,
 void netfs_readahead(struct readahead_control *ractl)
 {
 	struct netfs_io_request *rreq;
-	struct netfs_inode *ctx = netfs_inode(ractl->mapping->host);
+	struct netfs_i_context *ctx = netfs_i_context(ractl->mapping->host);
 	int ret;
 
 	_enter("%lx,%x", readahead_index(ractl), readahead_count(ractl));
@@ -215,7 +215,7 @@ int netfs_read_folio(struct file *file, struct folio *folio)
 {
 	struct address_space *mapping = folio_file_mapping(folio);
 	struct netfs_io_request *rreq;
-	struct netfs_inode *ctx = netfs_inode(mapping->host);
+	struct netfs_i_context *ctx = netfs_i_context(mapping->host);
 	int ret;
 
 	_enter("%lx", folio_index(folio));
