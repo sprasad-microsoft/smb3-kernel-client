@@ -336,14 +336,14 @@ out:
  * Mark a page as having been made dirty and thus needing writeback.  We also
  * need to pin the cache object to write back to.
  */
-static bool v9fs_dirty_folio(struct address_space *mapping, struct folio *folio)
+static int v9fs_set_page_dirty(struct page *page)
 {
-	struct v9fs_inode *v9inode = V9FS_I(mapping->host);
+	struct v9fs_inode *v9inode = V9FS_I(page->mapping->host);
 
-	return fscache_dirty_folio(mapping, folio, v9fs_inode_cookie(v9inode));
+	return fscache_set_page_dirty(page, v9fs_inode_cookie(v9inode));
 }
 #else
-#define v9fs_dirty_folio filemap_dirty_folio
+#define v9fs_set_page_dirty __set_page_dirty_nobuffers
 #endif
 
 const struct address_space_operations v9fs_addr_operations = {

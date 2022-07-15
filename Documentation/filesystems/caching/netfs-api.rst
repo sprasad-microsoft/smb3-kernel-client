@@ -345,9 +345,8 @@ The following facilities are provided to manage this:
 
 To support this, the following functions are provided::
 
-	bool fscache_dirty_folio(struct address_space *mapping,
-				 struct folio *folio,
-				 struct fscache_cookie *cookie);
+	int fscache_set_page_dirty(struct page *page,
+				   struct fscache_cookie *cookie);
 	void fscache_unpin_writeback(struct writeback_control *wbc,
 				     struct fscache_cookie *cookie);
 	void fscache_clear_inode_writeback(struct fscache_cookie *cookie,
@@ -355,7 +354,7 @@ To support this, the following functions are provided::
 					   const void *aux);
 
 The *set* function is intended to be called from the filesystem's
-``dirty_folio`` address space operation.  If ``I_PINNING_FSCACHE_WB`` is not
+``set_page_dirty`` address space operation.  If ``I_PINNING_FSCACHE_WB`` is not
 set, it sets that flag and increments the use count on the cookie (the caller
 must already have called ``fscache_use_cookie()``).
 

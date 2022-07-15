@@ -1530,9 +1530,9 @@ extern int afs_check_volume_status(struct afs_volume *, struct afs_operation *);
  * write.c
  */
 #ifdef CONFIG_AFS_FSCACHE
-bool afs_dirty_folio(struct address_space *, struct folio *);
+extern int afs_set_page_dirty(struct page *);
 #else
-#define afs_dirty_folio filemap_dirty_folio
+#define afs_set_page_dirty __set_page_dirty_nobuffers
 #endif
 extern int afs_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len,

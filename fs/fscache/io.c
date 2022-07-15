@@ -159,29 +159,27 @@ int __fscache_begin_write_operation(struct netfs_cache_resources *cres,
 EXPORT_SYMBOL(__fscache_begin_write_operation);
 
 /**
- * fscache_dirty_folio - Mark folio dirty and pin a cache object for writeback
- * @mapping: The mapping the folio belongs to.
- * @folio: The folio being dirtied.
+ * fscache_set_page_dirty - Mark page dirty and pin a cache object for writeback
+ * @page: The page being dirtied
  * @cookie: The cookie referring to the cache object
  *
- * Set the dirty flag on a folio and pin an in-use cache object in memory
- * so that writeback can later write to it.  This is intended
- * to be called from the filesystem's ->dirty_folio() method.
+ * Set the dirty flag on a page and pin an in-use cache object in memory when
+ * dirtying a page so that writeback can later write to it.  This is intended
+ * to be called from the filesystem's ->set_page_dirty() method.
  *
- * Return: true if the dirty flag was set on the folio, false otherwise.
+ *  Returns 1 if PG_dirty was set on the page, 0 otherwise.
  */
-bool fscache_dirty_folio(struct address_space *mapping, struct folio *folio,
-				struct fscache_cookie *cookie)
+int fscache_set_page_dirty(struct page *page, struct fscache_cookie *cookie)
 {
-	struct inode *inode = mapping->host;
+	struct inode *inode = page->mapping->host;
 	bool need_use = false;
 
 	_enter("");
 
-	if (!filemap_dirty_folio(mapping, folio))
-		return false;
+	if (!__set_page_dirty_nobuffers(page))
+		return 0;
 	if (!fscache_cookie_valid(cookie))
-		return true;
+		return 1;
 
 	if (!(inode->i_state & I_PINNING_FSCACHE_WB)) {
 		spin_lock(&inode->i_lock);
@@ -194,9 +192,9 @@ bool fscache_dirty_folio(struct address_space *mapping, struct folio *folio,
 		if (need_use)
 			fscache_use_cookie(cookie, true);
 	}
-	return true;
+	return 1;
 }
-EXPORT_SYMBOL(fscache_dirty_folio);
+EXPORT_SYMBOL(fscache_set_page_dirty);
 
 struct fscache_write_request {
 	struct netfs_cache_resources cache_resources;
