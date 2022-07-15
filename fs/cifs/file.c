@@ -4546,9 +4546,8 @@ io_error:
 	return rc;
 }
 
-static int cifs_read_folio(struct file *file, struct folio *folio)
+static int cifs_readpage(struct file *file, struct page *page)
 {
-	struct page *page = &folio->page;
 	loff_t offset = page_file_offset(page);
 	int rc = -EACCES;
 	unsigned int xid;
@@ -4561,7 +4560,7 @@ static int cifs_read_folio(struct file *file, struct folio *folio)
 		return rc;
 	}
 
-	cifs_dbg(FYI, "read_folio %p at offset %d 0x%x\n",
+	cifs_dbg(FYI, "readpage %p at offset %d 0x%x\n",
 		 page, (int)offset, (int)offset);
 
 	rc = cifs_readpage_worker(file, page, &offset);
@@ -4883,7 +4882,7 @@ static void cifs_swap_deactivate(struct file *file)
 }
 
 const struct address_space_operations cifs_addr_ops = {
-	.read_folio = cifs_read_folio,
+	.readpage = cifs_readpage,
 	.readahead = cifs_readahead,
 	.writepage = cifs_writepage,
 	.writepages = cifs_writepages,
@@ -4904,12 +4903,12 @@ const struct address_space_operations cifs_addr_ops = {
 };
 
 /*
- * cifs_readahead requires the server to support a buffer large enough to
+ * cifs_readpages requires the server to support a buffer large enough to
  * contain the header plus one complete page of data.  Otherwise, we need
- * to leave cifs_readahead out of the address space operations.
+ * to leave cifs_readpages out of the address space operations.
  */
 const struct address_space_operations cifs_addr_ops_smallbuf = {
-	.read_folio = cifs_read_folio,
+	.readpage = cifs_readpage,
 	.writepage = cifs_writepage,
 	.writepages = cifs_writepages,
 	.write_begin = cifs_write_begin,
