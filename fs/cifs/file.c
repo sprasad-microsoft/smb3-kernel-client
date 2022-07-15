@@ -3205,7 +3205,7 @@ restart_loop:
 	mutex_unlock(&ctx->aio_mutex);
 
 	if (ctx->iocb && ctx->iocb->ki_complete)
-		ctx->iocb->ki_complete(ctx->iocb, ctx->rc);
+		ctx->iocb->ki_complete(ctx->iocb, ctx->rc, 0);
 	else
 		complete(&ctx->done);
 }
@@ -3943,7 +3943,7 @@ again:
 	mutex_unlock(&ctx->aio_mutex);
 
 	if (ctx->iocb && ctx->iocb->ki_complete)
-		ctx->iocb->ki_complete(ctx->iocb, ctx->rc);
+		ctx->iocb->ki_complete(ctx->iocb, ctx->rc, 0);
 	else
 		complete(&ctx->done);
 }

@@ -273,7 +273,7 @@ static void nfs_direct_complete(struct nfs_direct_req *dreq)
 			res = (long) dreq->count;
 			WARN_ON_ONCE(dreq->count < 0);
 		}
-		dreq->iocb->ki_complete(dreq->iocb, res);
+		dreq->iocb->ki_complete(dreq->iocb, res, 0);
 	}
 
 	complete(&dreq->completion);
