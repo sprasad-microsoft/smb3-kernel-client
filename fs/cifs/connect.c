@@ -41,7 +41,6 @@
 #include "ntlmssp.h"
 #include "nterr.h"
 #include "rfc1002pdu.h"
-#include "fscache.h"
 #include "smb2proto.h"
 #include "smbdirect.h"
 #include "dns_resolve.h"
@@ -2340,7 +2339,6 @@ cifs_put_tcon(struct cifs_tcon *tcon)
 		ses->server->ops->tree_disconnect(xid, tcon);
 	_free_xid(xid);
 
-	cifs_fscache_release_super_cookie(tcon);
 	tconInfoFree(tcon);
 	cifs_put_smb_ses(ses);
 }
@@ -3246,14 +3244,6 @@ static int mount_get_conns(struct mount_ctx *mnt_ctx)
 	if ((cifs_sb->ctx->rsize == 0) ||
 	    (cifs_sb->ctx->rsize > server->ops->negotiate_rsize(tcon, ctx)))
 		cifs_sb->ctx->rsize = server->ops->negotiate_rsize(tcon, ctx);
-
-	/*
-	 * The cookie is initialized from volume info returned above.
-	 * Inside cifs_fscache_get_super_cookie it checks
-	 * that we do not get super cookie twice.
-	 */
-	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_FSCACHE)
-		cifs_fscache_get_super_cookie(tcon);
 
 out:
 	mnt_ctx->server = server;

@@ -29,7 +29,6 @@
 #include "cifs_unicode.h"
 #include "cifs_debug.h"
 #include "cifs_fs_sb.h"
-#include "fscache.h"
 #include "smbdirect.h"
 #include "fs_context.h"
 #include "cifs_ioctl.h"
@@ -649,14 +648,6 @@ int cifs_open(struct inode *inode, struct file *file)
 	}
 
 use_cache:
-	fscache_use_cookie(cifs_inode_cookie(file_inode(file)),
-			   file->f_mode & FMODE_WRITE);
-	if (file->f_flags & O_DIRECT &&
-	    (!((file->f_flags & O_ACCMODE) != O_RDONLY) ||
-	     file->f_flags & O_APPEND))
-		cifs_invalidate_cache(file_inode(file),
-				      FSCACHE_INVAL_DIO_WRITE);
-
 out:
 	free_dentry_path(page);
 	free_xid(xid);
@@ -880,8 +871,6 @@ int cifs_close(struct inode *inode, struct file *file)
 	struct cifsInodeInfo *cinode = CIFS_I(inode);
 	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
 	struct cifs_deferred_close *dclose;
-
-	cifs_fscache_unuse_inode_cookie(inode, file->f_mode & FMODE_WRITE);
 
 	if (file->private_data != NULL) {
 		cfile = file->private_data;
@@ -4216,11 +4205,6 @@ cifs_page_mkwrite(struct vm_fault *vmf)
 	/* Wait for the page to be written to the cache before we allow it to
 	 * be modified.  We then assume the entire page will need writing back.
 	 */
-#ifdef CONFIG_CIFS_FSCACHE
-	if (PageFsCache(page) &&
-	    wait_on_page_fscache_killable(page) < 0)
-		return VM_FAULT_RETRY;
-#endif
 
 	wait_on_page_writeback(page);
 
@@ -4289,10 +4273,6 @@ cifs_readv_complete(struct work_struct *work)
 			SetPageUptodate(page);
 		} else
 			SetPageError(page);
-
-		if (rdata->result == 0 ||
-		    (rdata->result == -EAGAIN && got_bytes))
-			cifs_readpage_to_fscache(rdata->mapping->host, page);
 
 		unlock_page(page);
 
@@ -4412,8 +4392,7 @@ static void cifs_readahead(struct readahead_control *ractl)
 	pid_t pid;
 	unsigned int xid, nr_pages, last_batch_size = 0, cache_nr_pages = 0;
 	pgoff_t next_cached = ULONG_MAX;
-	bool caching = fscache_cookie_enabled(cifs_inode_cookie(ractl->mapping->host)) &&
-		cifs_inode_cookie(ractl->mapping->host)->cache_priv;
+	bool caching = false;
 	bool check_cache = caching;
 
 	xid = get_xid();
@@ -4439,45 +4418,6 @@ static void cifs_readahead(struct readahead_control *ractl)
 		struct cifs_credits credits_on_stack;
 		struct cifs_credits *credits = &credits_on_stack;
 		pgoff_t index = readahead_index(ractl) + last_batch_size;
-
-		/*
-		 * Find out if we have anything cached in the range of
-		 * interest, and if so, where the next chunk of cached data is.
-		 */
-		if (caching) {
-			if (check_cache) {
-				rc = cifs_fscache_query_occupancy(
-					ractl->mapping->host, index, nr_pages,
-					&next_cached, &cache_nr_pages);
-				if (rc < 0)
-					caching = false;
-				check_cache = false;
-			}
-
-			if (index == next_cached) {
-				/*
-				 * TODO: Send a whole batch of pages to be read
-				 * by the cache.
-				 */
-				page = readahead_page(ractl);
-				last_batch_size = 1 << thp_order(page);
-				if (cifs_readpage_from_fscache(ractl->mapping->host,
-							       page) < 0) {
-					/*
-					 * TODO: Deal with cache read failure
-					 * here, but for the moment, delegate
-					 * that to readpage.
-					 */
-					caching = false;
-				}
-				unlock_page(page);
-				next_cached++;
-				cache_nr_pages--;
-				if (cache_nr_pages == 0)
-					check_cache = true;
-				continue;
-			}
-		}
 
 		if (open_file->invalidHandle) {
 			rc = cifs_reopen_file(open_file, true);
@@ -4574,11 +4514,6 @@ static int cifs_readpage_worker(struct file *file, struct page *page,
 	char *read_data;
 	int rc;
 
-	/* Is the page cached? */
-	rc = cifs_readpage_from_fscache(file_inode(file), page);
-	if (rc == 0)
-		goto read_complete;
-
 	read_data = kmap(page);
 	/* for reads over a certain size could initiate async read ahead */
 
@@ -4602,8 +4537,6 @@ static int cifs_readpage_worker(struct file *file, struct page *page,
 	flush_dcache_page(page);
 	SetPageUptodate(page);
 
-	/* send this page to the cache */
-	cifs_readpage_to_fscache(file_inode(file), page);
 
 	rc = 0;
 
@@ -4765,19 +4698,12 @@ static bool cifs_release_folio(struct folio *folio, gfp_t gfp)
 {
 	if (folio_test_private(folio))
 		return 0;
-	if (folio_test_fscache(folio)) {
-		if (current_is_kswapd() || !(gfp & __GFP_FS))
-			return false;
-		folio_wait_fscache(folio);
-	}
-	fscache_note_page_release(cifs_inode_cookie(folio->mapping->host));
 	return true;
 }
 
 static void cifs_invalidate_folio(struct folio *folio, size_t offset,
 				 size_t length)
 {
-	folio_wait_fscache(folio);
 }
 
 static int cifs_launder_folio(struct folio *folio)
@@ -4797,7 +4723,6 @@ static int cifs_launder_folio(struct folio *folio)
 	if (folio_clear_dirty_for_io(folio))
 		rc = cifs_writepage_locked(&folio->page, &wbc);
 
-	folio_wait_fscache(folio);
 	return rc;
 }
 
@@ -4958,20 +4883,6 @@ static void cifs_swap_deactivate(struct file *file)
 
 	/* do we need to unpin (or unlock) the file */
 }
-
-/*
- * Mark a page as having been made dirty and thus needing writeback.  We also
- * need to pin the cache object to write back to.
- */
-#ifdef CONFIG_CIFS_FSCACHE
-static bool cifs_dirty_folio(struct address_space *mapping, struct folio *folio)
-{
-	return fscache_dirty_folio(mapping, folio,
-					cifs_inode_cookie(mapping->host));
-}
-#else
-#define cifs_dirty_folio filemap_dirty_folio
-#endif
 
 const struct address_space_operations cifs_addr_ops = {
 	.read_folio = cifs_read_folio,

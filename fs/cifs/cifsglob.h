@@ -1252,10 +1252,6 @@ struct cifs_tcon {
 	__u32 max_chunks;
 	__u32 max_bytes_chunk;
 	__u32 max_bytes_copy;
-#ifdef CONFIG_CIFS_FSCACHE
-	u64 resource_id;		/* server resource id */
-	struct fscache_volume *fscache;	/* cookie for share */
-#endif
 	struct list_head pending_opens;	/* list of incomplete opens */
 	struct cached_fid crfid; /* Cached root fid */
 	/* BB add field for back pointer to sb struct(s)? */
@@ -1551,7 +1547,6 @@ struct cifsInodeInfo {
 	struct {
 		/* These must be contiguous */
 		struct inode	vfs_inode;	/* the VFS's inode record */
-		struct netfs_i_context netfs_ctx; /* Netfslib context */
 	};
 	bool can_cache_brlcks;
 	struct list_head llist;	/* locks helb by this inode */

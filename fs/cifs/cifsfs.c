@@ -38,7 +38,6 @@
 #include <linux/mm.h>
 #include <linux/key-type.h>
 #include "cifs_spnego.h"
-#include "fscache.h"
 #ifdef CONFIG_CIFS_DFS_UPCALL
 #include "dfs_cache.h"
 #endif
@@ -407,9 +406,6 @@ static void
 cifs_evict_inode(struct inode *inode)
 {
 	truncate_inode_pages_final(&inode->i_data);
-	if (inode->i_state & I_PINNING_FSCACHE_WB)
-		cifs_fscache_unuse_inode_cookie(inode, true);
-	cifs_fscache_release_inode_cookie(inode);
 	clear_inode(inode);
 }
 
@@ -636,8 +632,6 @@ cifs_show_options(struct seq_file *s, struct dentry *root)
 		seq_puts(s, ",acl");
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MF_SYMLINKS)
 		seq_puts(s, ",mfsymlinks");
-	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_FSCACHE)
-		seq_puts(s, ",fsc");
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NOSSYNC)
 		seq_puts(s, ",nostrictsync");
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_PERM)
@@ -741,7 +735,6 @@ static int cifs_show_stats(struct seq_file *s, struct dentry *root)
 
 static int cifs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-	fscache_unpin_writeback(wbc, cifs_inode_cookie(inode));
 	return 0;
 }
 

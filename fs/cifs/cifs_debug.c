@@ -234,9 +234,6 @@ static int cifs_debug_data_proc_show(struct seq_file *m, void *v)
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	seq_printf(m, " DFS");
 #endif
-#ifdef CONFIG_CIFS_FSCACHE
-	seq_printf(m, ",FSCACHE");
-#endif
 #ifdef CONFIG_CIFS_SMB_DIRECT
 	seq_printf(m, ",SMB_DIRECT");
 #endif

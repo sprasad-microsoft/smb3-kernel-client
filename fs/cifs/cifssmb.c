@@ -30,7 +30,6 @@
 #include "cifs_unicode.h"
 #include "cifs_debug.h"
 #include "smb2proto.h"
-#include "fscache.h"
 #include "smbdirect.h"
 #ifdef CONFIG_CIFS_DFS_UPCALL
 #include "dfs_cache.h"
@@ -2051,7 +2050,6 @@ cifs_writev_complete(struct work_struct *work)
 		else if (wdata->result < 0)
 			SetPageError(page);
 		end_page_writeback(page);
-		cifs_readpage_to_fscache(inode, page);
 		put_page(page);
 	}
 	if (wdata->result != -EAGAIN)

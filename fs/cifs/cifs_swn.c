@@ -12,7 +12,6 @@
 #include "cifs_swn.h"
 #include "cifsglob.h"
 #include "cifsproto.h"
-#include "fscache.h"
 #include "cifs_debug.h"
 #include "netlink.h"
 
