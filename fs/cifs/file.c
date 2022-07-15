@@ -4886,7 +4886,7 @@ const struct address_space_operations cifs_addr_ops = {
 	.set_page_dirty = __set_page_dirty_nobuffers,
 	.releasepage = cifs_release_page,
 	.direct_IO = cifs_direct_io,
-	.invalidate_folio = cifs_invalidate_folio,
+	.invalidatepage = cifs_invalidate_page,
 	.launder_page = cifs_launder_page,
 	/*
 	 * TODO: investigate and if useful we could add an cifs_migratePage
@@ -4910,6 +4910,6 @@ const struct address_space_operations cifs_addr_ops_smallbuf = {
 	.write_end = cifs_write_end,
 	.set_page_dirty = __set_page_dirty_nobuffers,
 	.releasepage = cifs_release_page,
-	.invalidate_folio = cifs_invalidate_folio,
+	.invalidatepage = cifs_invalidate_page,
 	.launder_page = cifs_launder_page,
 };
