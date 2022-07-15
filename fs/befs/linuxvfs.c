@@ -277,7 +277,7 @@ befs_alloc_inode(struct super_block *sb)
 {
 	struct befs_inode_info *bi;
 
-	bi = alloc_inode_sb(sb, befs_inode_cachep, GFP_KERNEL);
+	bi = kmem_cache_alloc(befs_inode_cachep, GFP_KERNEL);
 	if (!bi)
 		return NULL;
 	return &bi->vfs_inode;

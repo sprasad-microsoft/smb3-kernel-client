@@ -1243,7 +1243,7 @@ static struct inode *zonefs_alloc_inode(struct super_block *sb)
 {
 	struct zonefs_inode_info *zi;
 
-	zi = alloc_inode_sb(sb, zonefs_inode_cachep, GFP_KERNEL);
+	zi = kmem_cache_alloc(zonefs_inode_cachep, GFP_KERNEL);
 	if (!zi)
 		return NULL;
 
