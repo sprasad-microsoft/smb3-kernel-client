@@ -212,7 +212,7 @@ static int jffs2_write_begin(struct file *filp, struct address_space *mapping,
 	 * page in read_cache_page(), which causes a deadlock.
 	 */
 	mutex_lock(&c->alloc_sem);
-	pg = grab_cache_page_write_begin(mapping, index);
+	pg = grab_cache_page_write_begin(mapping, index, flags);
 	if (!pg) {
 		ret = -ENOMEM;
 		goto release_sem;

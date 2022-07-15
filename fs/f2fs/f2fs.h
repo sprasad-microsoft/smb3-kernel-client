@@ -2678,7 +2678,7 @@ static inline struct page *f2fs_grab_cache_page(struct address_space *mapping,
 		return grab_cache_page(mapping, index);
 
 	flags = memalloc_nofs_save();
-	page = grab_cache_page_write_begin(mapping, index);
+	page = grab_cache_page_write_begin(mapping, index, 0);
 	memalloc_nofs_restore(flags);
 
 	return page;

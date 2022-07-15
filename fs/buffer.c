@@ -2110,7 +2110,7 @@ int block_write_begin(struct address_space *mapping, loff_t pos, unsigned len,
 	struct page *page;
 	int status;
 
-	page = grab_cache_page_write_begin(mapping, index);
+	page = grab_cache_page_write_begin(mapping, index, 0);
 	if (!page)
 		return -ENOMEM;
 
@@ -2595,7 +2595,7 @@ int nobh_write_begin(struct address_space *mapping, loff_t pos, unsigned len,
 	from = pos & (PAGE_SIZE - 1);
 	to = from + len;
 
-	page = grab_cache_page_write_begin(mapping, index);
+	page = grab_cache_page_write_begin(mapping, index, flags);
 	if (!page)
 		return -ENOMEM;
 	*pagep = page;
