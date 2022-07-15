@@ -4690,9 +4690,9 @@ out:
 	return rc;
 }
 
-static bool cifs_release_folio(struct folio *folio, gfp_t gfp)
+static int cifs_release_page(struct page *page, gfp_t gfp)
 {
-	if (folio_test_private(folio))
+	if (PagePrivate(page))
 		return 0;
 	return true;
 }
@@ -4888,7 +4888,7 @@ const struct address_space_operations cifs_addr_ops = {
 	.write_begin = cifs_write_begin,
 	.write_end = cifs_write_end,
 	.dirty_folio = cifs_dirty_folio,
-	.release_folio = cifs_release_folio,
+	.releasepage = cifs_release_page,
 	.direct_IO = cifs_direct_io,
 	.invalidate_folio = cifs_invalidate_folio,
 	.launder_folio = cifs_launder_folio,
@@ -4913,7 +4913,7 @@ const struct address_space_operations cifs_addr_ops_smallbuf = {
 	.write_begin = cifs_write_begin,
 	.write_end = cifs_write_end,
 	.dirty_folio = cifs_dirty_folio,
-	.release_folio = cifs_release_folio,
+	.releasepage = cifs_release_page,
 	.invalidate_folio = cifs_invalidate_folio,
 	.launder_folio = cifs_launder_folio,
 };
