@@ -4702,11 +4702,11 @@ static void cifs_invalidate_page(struct page *page, unsigned int offset,
 {
 }
 
-static int cifs_launder_folio(struct folio *folio)
+static int cifs_launder_page(struct page *page)
 {
 	int rc = 0;
-	loff_t range_start = folio_pos(folio);
-	loff_t range_end = range_start + folio_size(folio);
+	loff_t range_start = page_offset(page);
+	loff_t range_end = range_start + (loff_t)(PAGE_SIZE - 1);
 	struct writeback_control wbc = {
 		.sync_mode = WB_SYNC_ALL,
 		.nr_to_write = 0,
@@ -4714,10 +4714,10 @@ static int cifs_launder_folio(struct folio *folio)
 		.range_end = range_end,
 	};
 
-	cifs_dbg(FYI, "Launder page: %lu\n", folio->index);
+	cifs_dbg(FYI, "Launder page: %p\n", page);
 
-	if (folio_clear_dirty_for_io(folio))
-		rc = cifs_writepage_locked(&folio->page, &wbc);
+	if (clear_page_dirty_for_io(page))
+		rc = cifs_writepage_locked(page, &wbc);
 
 	return rc;
 }
@@ -4891,7 +4891,7 @@ const struct address_space_operations cifs_addr_ops = {
 	.releasepage = cifs_release_page,
 	.direct_IO = cifs_direct_io,
 	.invalidate_folio = cifs_invalidate_folio,
-	.launder_folio = cifs_launder_folio,
+	.launder_page = cifs_launder_page,
 	/*
 	 * TODO: investigate and if useful we could add an cifs_migratePage
 	 * helper (under an CONFIG_MIGRATION) in the future, and also
@@ -4915,5 +4915,5 @@ const struct address_space_operations cifs_addr_ops_smallbuf = {
 	.dirty_folio = cifs_dirty_folio,
 	.releasepage = cifs_release_page,
 	.invalidate_folio = cifs_invalidate_folio,
-	.launder_folio = cifs_launder_folio,
+	.launder_page = cifs_launder_page,
 };
