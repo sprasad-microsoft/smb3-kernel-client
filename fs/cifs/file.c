@@ -4390,10 +4390,9 @@ static void cifs_readahead(struct readahead_control *ractl)
 	struct cifs_sb_info *cifs_sb = CIFS_FILE_SB(ractl->file);
 	struct TCP_Server_Info *server;
 	pid_t pid;
-	unsigned int xid, nr_pages, last_batch_size = 0, cache_nr_pages = 0;
+	unsigned int xid, nr_pages, last_batch_size = 0;
 	pgoff_t next_cached = ULONG_MAX;
 	bool caching = false;
-	bool check_cache = caching;
 
 	xid = get_xid();
 
@@ -4544,7 +4543,6 @@ io_error:
 	kunmap(page);
 	unlock_page(page);
 
-read_complete:
 	return rc;
 }
 
