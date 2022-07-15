@@ -4697,8 +4697,8 @@ static int cifs_release_page(struct page *page, gfp_t gfp)
 	return true;
 }
 
-static void cifs_invalidate_folio(struct folio *folio, size_t offset,
-				 size_t length)
+static void cifs_invalidate_page(struct page *page, unsigned int offset,
+				 unsigned int length)
 {
 }
 
