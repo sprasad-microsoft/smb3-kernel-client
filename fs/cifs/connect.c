@@ -269,16 +269,16 @@ cifs_mark_tcp_ses_conns_for_reconnect(struct TCP_Server_Info *server,
 		else
 			cifs_chan_set_need_reconnect(ses, server);
 
+		cifs_server_dbg(FYI, "marking conn_id 0x%llx for reconnect\n",
+			 server->conn_id);
+
 		/* If all channels need reconnect, then tcon needs reconnect */
 		if (!mark_smb_session && !CIFS_ALL_CHANS_NEED_RECONNECT(ses))
 			goto next_session;
 
-		ses->ses_status = SES_NEED_RECON;
-
-		list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+		list_for_each_entry(tcon, &ses->tcon_list, tcon_list)
 			tcon->need_reconnect = true;
-			tcon->status = TID_NEED_RECON;
-		}
+
 		if (ses->tcon_ipc)
 			ses->tcon_ipc->need_reconnect = true;
 
@@ -4111,6 +4111,16 @@ cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
 	else
 		scnprintf(ses->ip_addr, sizeof(ses->ip_addr), "%pI4", &addr->sin_addr);
 
+	/*
+	 * if primary channel is still being setup,
+	 * we cannot bind to it. try again after sometime
+	 */
+	if (ses->ses_status == SES_IN_SETUP) {
+		spin_unlock(&ses->ses_lock);
+		msleep(10);
+		return -EAGAIN;
+	}
+
 	if (ses->ses_status != SES_GOOD &&
 	    ses->ses_status != SES_NEW &&
 	    ses->ses_status != SES_NEED_RECON) {
@@ -4120,12 +4130,12 @@ cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
 
 	/* only send once per connect */
 	spin_lock(&ses->chan_lock);
-	if (CIFS_ALL_CHANS_GOOD(ses) ||
-	    cifs_chan_in_reconnect(ses, server)) {
+	if (cifs_chan_in_reconnect(ses, server)) {
 		spin_unlock(&ses->chan_lock);
 		spin_unlock(&ses->ses_lock);
 		return 0;
 	}
+
 	is_binding = !CIFS_ALL_CHANS_NEED_RECONNECT(ses);
 	cifs_chan_set_in_reconnect(ses, server);
 	spin_unlock(&ses->chan_lock);
@@ -4133,6 +4143,9 @@ cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
 	if (!is_binding)
 		ses->ses_status = SES_IN_SETUP;
 	spin_unlock(&ses->ses_lock);
+
+	cifs_server_dbg(FYI, "%s: conn_id 0x%llx, is_binding: %d\n",
+			__func__, server->conn_id, is_binding);
 
 	if (!is_binding) {
 		ses->capabilities = server->capabilities;
@@ -4639,8 +4652,9 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 	/* only send once per connect */
 	spin_lock(&tcon->tc_lock);
 	if (tcon->ses->ses_status != SES_GOOD ||
-	    (tcon->status != TID_NEW &&
-	    tcon->status != TID_NEED_TCON)) {
+	    (tcon->status != TID_GOOD &&
+	     tcon->status != TID_NEW &&
+	     tcon->status != TID_NEED_TCON)) {
 		spin_unlock(&tcon->tc_lock);
 		return 0;
 	}
