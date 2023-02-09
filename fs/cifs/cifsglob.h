@@ -624,6 +624,7 @@ struct TCP_Server_Info {
 #ifdef CONFIG_NET_NS
 	struct net *net;
 #endif
+	wait_queue_head_t reconnect_q;	/* for handling parallel reconnects */
 	wait_queue_head_t response_q;
 	wait_queue_head_t request_q; /* if more than maxmpx to srvr must block*/
 	spinlock_t mid_lock;  /* protect mid queue and it's entries */
@@ -1002,7 +1003,6 @@ iface_cmp(struct cifs_server_iface *a, struct cifs_server_iface *b)
 }
 
 struct cifs_chan {
-	unsigned int in_reconnect : 1; /* if session setup in progress for this channel */
 	struct TCP_Server_Info *server;
 	struct cifs_server_iface *iface; /* interface in use */
 	__u8 signkey[SMB3_SIGN_KEY_SIZE];
@@ -1017,6 +1017,7 @@ struct cifs_ses {
 	struct list_head tcon_list;
 	struct cifs_tcon *tcon_ipc;
 	spinlock_t ses_lock;  /* protect anything here that is not protected */
+	wait_queue_head_t reconnect_q;	/* for handling parallel reconnects */
 	struct mutex session_mutex;
 	struct TCP_Server_Info *server;	/* pointer to server info */
 	int ses_count;		/* reference counter */
@@ -1076,7 +1077,9 @@ struct cifs_ses {
 #define CIFS_CHAN_NEEDS_RECONNECT(ses, index)	\
 	test_bit((index), &(ses)->chans_need_reconnect)
 #define CIFS_CHAN_IN_RECONNECT(ses, index)	\
-	((ses)->chans[(index)].in_reconnect)
+	test_bit((index), &(ses)->chans_in_reconnect)
+#define CIFS_ALL_CHANS_IN_RECONNECT(ses)	\
+	((ses)->chans_in_reconnect == CIFS_ALL_CHANNELS_SET(ses))
 
 	struct cifs_chan chans[CIFS_MAX_CHANNELS];
 	size_t chan_count;
@@ -1092,8 +1095,14 @@ struct cifs_ses {
 	 * channels are marked for needing reconnection. This will
 	 * enable the sessions on top to continue to live till any
 	 * of the channels below are active.
+	 *
+	 * chans_in_reconnect is a bitmap indicating which channels
+	 * are in the process of reconnecting. This is needed
+	 * to avoid race conditions between processes which
+	 * do channel binding in parallel.
 	 */
 	unsigned long chans_need_reconnect;
+	unsigned long chans_in_reconnect;
 	/* ========= end: protected by chan_lock ======== */
 	struct cifs_ses *dfs_root_ses;
 };
@@ -1145,6 +1154,7 @@ struct cifs_tcon {
 	int tc_count;
 	struct list_head rlist; /* reconnect list */
 	spinlock_t tc_lock;  /* protect anything here that is not protected */
+	wait_queue_head_t reconnect_q;	/* for handling parallel reconnects */
 	atomic_t num_local_opens;  /* num of all opens including disconnected */
 	atomic_t num_remote_opens; /* num of all network opens on server */
 	struct list_head openFileList;

@@ -406,6 +406,11 @@ skip_rdma:
 				ses->capabilities, ses->ses_status);
 			}
 
+			if (ses->chan_count > 1)
+				seq_printf(m, "\n\tChannel reconnect bitmaps: 0x%lx 0x%lx",
+					   ses->chans_need_reconnect,
+					   ses->chans_in_reconnect);
+
 			seq_printf(m, "\n\tSecurity type: %s ",
 				get_security_type_str(server->ops->select_sectype(server, ses->sectype)));
 

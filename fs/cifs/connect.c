@@ -212,8 +212,10 @@ cifs_mark_tcp_ses_conns_for_reconnect(struct TCP_Server_Info *server,
 			cifs_chan_update_iface(ses, server);
 
 		spin_lock(&ses->chan_lock);
-		if (!mark_smb_session && cifs_chan_needs_reconnect(ses, server))
-			goto next_session;
+		if (!mark_smb_session && cifs_chan_needs_reconnect(ses, server)) {
+			spin_unlock(&ses->chan_lock);
+			continue;
+		}
 
 		if (mark_smb_session)
 			CIFS_SET_ALL_CHANS_NEED_RECONNECT(ses);
@@ -221,22 +223,28 @@ cifs_mark_tcp_ses_conns_for_reconnect(struct TCP_Server_Info *server,
 			cifs_chan_set_need_reconnect(ses, server);
 
 		/* If all channels need reconnect, then tcon needs reconnect */
-		if (!mark_smb_session && !CIFS_ALL_CHANS_NEED_RECONNECT(ses))
-			goto next_session;
+		if (!mark_smb_session && !CIFS_ALL_CHANS_NEED_RECONNECT(ses)) {
+			spin_unlock(&ses->chan_lock);
+			continue;
+		}
+		spin_unlock(&ses->chan_lock);
 
+		spin_lock(&ses->ses_lock);
 		ses->ses_status = SES_NEED_RECON;
+		spin_unlock(&ses->ses_lock);
 
 		list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
 			tcon->need_reconnect = true;
+			spin_lock(&tcon->tc_lock);
 			tcon->status = TID_NEED_RECON;
+			spin_unlock(&tcon->tc_lock);
 		}
 		if (ses->tcon_ipc) {
 			ses->tcon_ipc->need_reconnect = true;
+			spin_lock(&ses->tcon_ipc->tc_lock);
 			ses->tcon_ipc->status = TID_NEED_RECON;
+			spin_unlock(&ses->tcon_ipc->tc_lock);
 		}
-
-next_session:
-		spin_unlock(&ses->chan_lock);
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
 }
@@ -1596,6 +1604,7 @@ cifs_get_tcp_session(struct smb3_fs_context *ctx,
 	}
 	init_waitqueue_head(&tcp_ses->response_q);
 	init_waitqueue_head(&tcp_ses->request_q);
+	init_waitqueue_head(&tcp_ses->reconnect_q);
 	INIT_LIST_HEAD(&tcp_ses->pending_mid_q);
 	mutex_init(&tcp_ses->_srv_mutex);
 	memcpy(tcp_ses->workstation_RFC1001_name,
@@ -3648,17 +3657,55 @@ cifs_negotiate_protocol(const unsigned int xid, struct cifs_ses *ses,
 			struct TCP_Server_Info *server)
 {
 	int rc = 0;
+	int retries = server->nr_targets;
 
 	if (!server->ops->need_neg || !server->ops->negotiate)
 		return -ENOSYS;
 
+check_again:
 	/* only send once per connect */
 	spin_lock(&server->srv_lock);
-	if (!server->ops->need_neg(server) ||
+	if (server->tcpStatus != CifsGood &&
+	    server->tcpStatus != CifsNew &&
 	    server->tcpStatus != CifsNeedNegotiate) {
+		spin_unlock(&server->srv_lock);
+		return -EHOSTDOWN;
+	}
+
+	if (!server->ops->need_neg(server) &&
+	    server->tcpStatus == CifsGood) {
 		spin_unlock(&server->srv_lock);
 		return 0;
 	}
+
+	/* another process is in the processs of negotiating */
+	while (server->tcpStatus == CifsInNegotiate) {
+		spin_unlock(&server->srv_lock);
+		rc = wait_event_interruptible_timeout(server->reconnect_q,
+						      (server->tcpStatus != CifsInNegotiate),
+						      HZ);
+		if (rc < 0) {
+			cifs_dbg(FYI, "%s: aborting negotiate due to a received signal by the process\n",
+				 __func__);
+			return -ERESTARTSYS;
+		}
+		spin_lock(&server->srv_lock);
+
+		/* are we still waiting for others */
+		if (server->tcpStatus != CifsInNegotiate) {
+			spin_unlock(&server->srv_lock);
+			goto check_again;
+		}
+
+		if (retries && --retries)
+			continue;
+
+		cifs_dbg(FYI, "gave up waiting on CifsInNegotiate\n");
+		spin_unlock(&server->srv_lock);
+		return -EHOSTDOWN;
+	}
+
+	/* now mark the server so that others don't reach here */
 	server->tcpStatus = CifsInNegotiate;
 	spin_unlock(&server->srv_lock);
 
@@ -3676,6 +3723,7 @@ cifs_negotiate_protocol(const unsigned int xid, struct cifs_ses *ses,
 			server->tcpStatus = CifsNeedNegotiate;
 		spin_unlock(&server->srv_lock);
 	}
+	wake_up(&server->reconnect_q);
 
 	return rc;
 }
@@ -3690,25 +3738,63 @@ cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
 	struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&pserver->dstaddr;
 	struct sockaddr_in *addr = (struct sockaddr_in *)&pserver->dstaddr;
 	bool is_binding = false;
+	int retries;
+
+check_again:
+	retries = 5;
 
 	spin_lock(&ses->ses_lock);
 	if (ses->ses_status != SES_GOOD &&
 	    ses->ses_status != SES_NEW &&
 	    ses->ses_status != SES_NEED_RECON) {
 		spin_unlock(&ses->ses_lock);
-		return 0;
+		return -EHOSTDOWN;
 	}
 
 	/* only send once per connect */
 	spin_lock(&ses->chan_lock);
-	if (CIFS_ALL_CHANS_GOOD(ses) ||
-	    cifs_chan_in_reconnect(ses, server)) {
+	if (CIFS_ALL_CHANS_GOOD(ses)) {
+		if (ses->ses_status == SES_NEED_RECON)
+			ses->ses_status = SES_GOOD;
 		spin_unlock(&ses->chan_lock);
 		spin_unlock(&ses->ses_lock);
 		return 0;
 	}
-	is_binding = !CIFS_ALL_CHANS_NEED_RECONNECT(ses);
+
+	/* another process is in the processs of sess setup */
+	while (cifs_chan_in_reconnect(ses, server)) {
+		spin_unlock(&ses->chan_lock);
+		spin_unlock(&ses->ses_lock);
+		rc = wait_event_interruptible_timeout(ses->reconnect_q,
+						      (!cifs_chan_in_reconnect(ses, server)),
+						      HZ);
+		if (rc < 0) {
+			cifs_dbg(FYI, "%s: aborting sess setup due to a received signal by the process\n",
+				 __func__);
+			return -ERESTARTSYS;
+		}
+		spin_lock(&ses->ses_lock);
+		spin_lock(&ses->chan_lock);
+
+		/* are we still trying to reconnect? */
+		if (!cifs_chan_in_reconnect(ses, server)) {
+			spin_unlock(&ses->chan_lock);
+			spin_unlock(&ses->ses_lock);
+			goto check_again;
+		}
+
+		if (retries && --retries)
+			continue;
+
+		cifs_dbg(FYI, "gave up waiting on cifs_chan_in_reconnect\n");
+		spin_unlock(&ses->chan_lock);
+		spin_unlock(&ses->ses_lock);
+		return -EHOSTDOWN;
+	}
+
+	/* now mark the session so that others don't reach here */
 	cifs_chan_set_in_reconnect(ses, server);
+	is_binding = !CIFS_ALL_CHANS_NEED_RECONNECT(ses);
 	spin_unlock(&ses->chan_lock);
 
 	if (!is_binding)
@@ -3762,6 +3848,7 @@ cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
 		spin_unlock(&ses->chan_lock);
 		spin_unlock(&ses->ses_lock);
 	}
+	wake_up(&ses->reconnect_q);
 
 	return rc;
 }
@@ -4035,6 +4122,10 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 {
 	int rc;
 	const struct smb_version_operations *ops = tcon->ses->server->ops;
+	int retries;
+
+check_again:
+	retries = 5;
 
 	/* only send once per connect */
 	spin_lock(&tcon->tc_lock);
@@ -4050,6 +4141,35 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 		spin_unlock(&tcon->tc_lock);
 		return 0;
 	}
+
+	/* another process is in the processs of negotiating */
+	while (tcon->status == TID_IN_TCON) {
+		spin_unlock(&tcon->tc_lock);
+		rc = wait_event_interruptible_timeout(tcon->reconnect_q,
+						      (tcon->status != TID_IN_TCON),
+						      HZ);
+		if (rc < 0) {
+			cifs_dbg(FYI, "%s: aborting tree connect due to a received signal by the process\n",
+				 __func__);
+			return -ERESTARTSYS;
+		}
+		spin_lock(&tcon->tc_lock);
+
+		/* are we still trying to reconnect? */
+		if (tcon->status != TID_IN_TCON) {
+			spin_unlock(&tcon->tc_lock);
+			goto check_again;
+		}
+
+		if (retries && --retries)
+			continue;
+
+		cifs_dbg(FYI, "gave up waiting on TID_IN_TCON\n");
+		spin_unlock(&tcon->tc_lock);
+		return -EHOSTDOWN;
+	}
+
+	/* now mark the tcon so that others don't reach here */
 	tcon->status = TID_IN_TCON;
 	spin_unlock(&tcon->tc_lock);
 
@@ -4066,6 +4186,7 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 		tcon->need_reconnect = false;
 		spin_unlock(&tcon->tc_lock);
 	}
+	wake_up(&tcon->reconnect_q);
 
 	return rc;
 }

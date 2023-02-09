@@ -80,6 +80,7 @@ sesInfoAlloc(void)
 		spin_lock_init(&ret_buf->iface_lock);
 		INIT_LIST_HEAD(&ret_buf->iface_list);
 		spin_lock_init(&ret_buf->chan_lock);
+		init_waitqueue_head(&ret_buf->reconnect_q);
 	}
 	return ret_buf;
 }
@@ -134,6 +135,7 @@ tconInfoAlloc(void)
 	spin_lock_init(&ret_buf->stat_lock);
 	atomic_set(&ret_buf->num_local_opens, 0);
 	atomic_set(&ret_buf->num_remote_opens, 0);
+	init_waitqueue_head(&ret_buf->reconnect_q);
 
 	return ret_buf;
 }
