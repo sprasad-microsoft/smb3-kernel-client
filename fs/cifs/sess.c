@@ -94,7 +94,9 @@ cifs_chan_set_in_reconnect(struct cifs_ses *ses,
 {
 	unsigned int chan_index = cifs_ses_get_chan_index(ses, server);
 
-	ses->chans[chan_index].in_reconnect = true;
+	set_bit(chan_index, &ses->chans_in_reconnect);
+	cifs_dbg(FYI, "Set in-reconnect bitmask for chan %u; now 0x%lx\n",
+		 chan_index, ses->chans_in_reconnect);
 }
 
 void
@@ -103,7 +105,9 @@ cifs_chan_clear_in_reconnect(struct cifs_ses *ses,
 {
 	unsigned int chan_index = cifs_ses_get_chan_index(ses, server);
 
-	ses->chans[chan_index].in_reconnect = false;
+	clear_bit(chan_index, &ses->chans_in_reconnect);
+	cifs_dbg(FYI, "Cleared in-reconnect bitmask for chan %u; now 0x%lx\n",
+		 chan_index, ses->chans_in_reconnect);
 }
 
 bool

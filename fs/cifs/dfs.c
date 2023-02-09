@@ -476,6 +476,10 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 	struct dfs_cache_tgt_list tl = DFS_CACHE_TGT_LIST_INIT(tl);
 	char *tree;
 	struct dfs_info3_param ref = {0};
+	int retries;
+
+check_again:
+	retries = 5;
 
 	/* only send once per connect */
 	spin_lock(&tcon->tc_lock);
@@ -491,6 +495,35 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 		spin_unlock(&tcon->tc_lock);
 		return 0;
 	}
+
+	/* another process is in the processs of negotiating */
+	while (tcon->status == TID_IN_TCON) {
+		spin_unlock(&tcon->tc_lock);
+		rc = wait_event_interruptible_timeout(tcon->reconnect_q,
+						      (tcon->status != TID_IN_TCON),
+						      HZ);
+		if (rc < 0) {
+			cifs_dbg(FYI, "%s: aborting tree connect due to a received signal by the process\n",
+				 __func__);
+			return -ERESTARTSYS;
+		}
+		spin_lock(&tcon->tc_lock);
+
+		/* are we still trying to reconnect? */
+		if (tcon->status != TID_IN_TCON) {
+			spin_unlock(&tcon->tc_lock);
+			goto check_again;
+		}
+
+		if (retries && --retries)
+			continue;
+
+		cifs_dbg(FYI, "gave up waiting on TID_IN_TCON\n");
+		spin_unlock(&tcon->tc_lock);
+		return -EHOSTDOWN;
+	}
+
+	/* now mark the tcon so that others don't reach here */
 	tcon->status = TID_IN_TCON;
 	spin_unlock(&tcon->tc_lock);
 
