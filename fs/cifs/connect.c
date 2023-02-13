@@ -222,6 +222,11 @@ cifs_mark_tcp_ses_conns_for_reconnect(struct TCP_Server_Info *server,
 		else
 			cifs_chan_set_need_reconnect(ses, server);
 
+		cifs_dbg(FYI, "%s: channel connect bitmaps: 0x%lx 0x%lx\n",
+			 __func__,
+			 ses->chans_need_reconnect,
+			 ses->chans_in_reconnect);
+
 		/* If all channels need reconnect, then tcon needs reconnect */
 		if (!mark_smb_session && !CIFS_ALL_CHANS_NEED_RECONNECT(ses)) {
 			spin_unlock(&ses->chan_lock);
@@ -3744,6 +3749,11 @@ check_again:
 	retries = 5;
 
 	spin_lock(&ses->ses_lock);
+	cifs_dbg(FYI, "%s: channel connect bitmaps: 0x%lx 0x%lx\n",
+		 __func__,
+		 ses->chans_need_reconnect,
+		 ses->chans_in_reconnect);
+
 	if (ses->ses_status != SES_GOOD &&
 	    ses->ses_status != SES_NEW &&
 	    ses->ses_status != SES_NEED_RECON) {
@@ -3762,11 +3772,11 @@ check_again:
 	}
 
 	/* another process is in the processs of sess setup */
-	while (cifs_chan_in_reconnect(ses, server)) {
+	while (ses->chans_in_reconnect) {
 		spin_unlock(&ses->chan_lock);
 		spin_unlock(&ses->ses_lock);
 		rc = wait_event_interruptible_timeout(ses->reconnect_q,
-						      (!cifs_chan_in_reconnect(ses, server)),
+						      (!ses->chans_in_reconnect),
 						      HZ);
 		if (rc < 0) {
 			cifs_dbg(FYI, "%s: aborting sess setup due to a received signal by the process\n",
@@ -3776,8 +3786,8 @@ check_again:
 		spin_lock(&ses->ses_lock);
 		spin_lock(&ses->chan_lock);
 
-		/* are we still trying to reconnect? */
-		if (!cifs_chan_in_reconnect(ses, server)) {
+		/* did the bitmask change? */
+		if (!ses->chans_in_reconnect) {
 			spin_unlock(&ses->chan_lock);
 			spin_unlock(&ses->ses_lock);
 			goto check_again;
