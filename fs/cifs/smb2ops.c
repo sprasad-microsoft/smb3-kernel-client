@@ -411,6 +411,14 @@ smb2_negotiate(const unsigned int xid,
 	/* BB we probably don't need to retry with modern servers */
 	if (rc == -EAGAIN)
 		rc = -EHOSTDOWN;
+
+	if (!rc &&
+	    ses->chan_count > 1 &&
+	    !(server->capabilities & SMB2_GLOBAL_CAP_MULTI_CHANNEL)) {
+		cifs_dbg(VFS, "server %s does not support multichannel anymore\n", ses->server->hostname);
+		cifs_disable_extra_channels(ses);
+	}
+
 	return rc;
 }
 

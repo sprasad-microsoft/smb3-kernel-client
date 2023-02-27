@@ -130,6 +130,12 @@ static void smb2_query_server_interfaces(struct work_struct *work)
 	if (rc) {
 		cifs_dbg(FYI, "%s: failed to query server interfaces: %d\n",
 				__func__, rc);
+
+		if (rc == -EOPNOTSUPP) {
+			/* cancel polling of interfaces and do not resched */
+			cancel_delayed_work_sync(&tcon->query_interfaces);
+			return;
+		}
 	}
 
 	queue_delayed_work(cifsiod_wq, &tcon->query_interfaces,

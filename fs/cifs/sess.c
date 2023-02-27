@@ -275,6 +275,41 @@ int cifs_try_adding_channels(struct cifs_sb_info *cifs_sb, struct cifs_ses *ses)
 }
 
 /*
+ * called when multichannel is disabled by the server
+ */
+void
+cifs_disable_extra_channels(struct cifs_ses *ses)
+{
+	int i, chan_count;
+	struct cifs_server_iface *iface = NULL;
+	struct TCP_Server_Info *server = NULL;
+
+	spin_lock(&ses->chan_lock);
+	chan_count = ses->chan_count;
+	ses->chan_count = 1;
+	for (i = 1; i < chan_count; i++) {
+		iface = ses->chans[i].iface;
+		server = ses->chans[i].server;
+		spin_unlock(&ses->chan_lock);
+
+		if (iface) {
+			spin_lock(&ses->iface_lock);
+			kref_put(&iface->refcount, release_iface);
+			iface->num_channels--;
+			if (--iface->weight_fulfilled < 0)
+				iface->weight_fulfilled = 0;
+			spin_unlock(&ses->iface_lock);
+		}
+		cifs_put_tcp_session(server, 0);
+
+		spin_lock(&ses->chan_lock);
+		ses->chans[i].iface = NULL;
+		ses->chans[i].server = NULL;
+	}
+	spin_unlock(&ses->chan_lock);
+}
+
+/*
  * update the iface for the channel if necessary.
  * will return 0 when iface is updated, 1 if removed, 2 otherwise
  * Must be called with chan_lock held.
