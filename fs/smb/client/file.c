@@ -1169,6 +1169,9 @@ int cifs_closedir(struct inode *inode, struct file *file)
 	tcon = tlink_tcon(cfile->tlink);
 	server = tcon->ses->server;
 
+	list_del(&cfile->tlist);
+	atomic_dec(&tcon->num_local_opens);
+
 	cifs_dbg(FYI, "Freeing private data in close dir\n");
 	spin_lock(&cfile->file_info_lock);
 	if (server->ops->dir_needs_close(cfile)) {

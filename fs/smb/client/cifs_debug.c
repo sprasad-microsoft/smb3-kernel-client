@@ -265,7 +265,7 @@ static int cifs_debug_files_proc_show(struct seq_file *m, void *v)
 	struct cifsFileInfo *cfile;
 
 	seq_puts(m, "# Version:1\n");
-	seq_puts(m, "# Format:\n");
+	seq_puts(m, "# Format\n");
 	seq_puts(m, "# <tree id> <ses id> <persistent fid> <flags> <count> <pid> <uid>");
 #ifdef CONFIG_CIFS_DEBUG2
 	seq_printf(m, " <filename> <mid>\n");
@@ -293,6 +293,42 @@ static int cifs_debug_files_proc_show(struct seq_file *m, void *v)
 #else
 					seq_printf(m, "\n");
 #endif /* CIFS_DEBUG2 */
+				}
+				spin_unlock(&tcon->open_file_lock);
+			}
+		}
+	}
+	spin_unlock(&cifs_tcp_ses_lock);
+	seq_putc(m, '\n');
+	return 0;
+}
+
+static int cifs_debug_dirs_proc_show(struct seq_file *m, void *v)
+{
+	struct TCP_Server_Info *server;
+	struct cifs_ses *ses;
+	struct cifs_tcon *tcon;
+	struct cifsFileInfo *cfile;
+
+	seq_puts(m, "# Version:1\n");
+	seq_puts(m, "# Format\n");
+	seq_puts(m, "# <tree id> <ses id> <persistent fid> <flags> <count> <pid> <uid> <filename>\n");
+	spin_lock(&cifs_tcp_ses_lock);
+	list_for_each_entry(server, &cifs_tcp_ses_list, tcp_ses_list) {
+		list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+			list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+				spin_lock(&tcon->open_file_lock);
+				list_for_each_entry(cfile, &tcon->openDirList, tlist) {
+					seq_printf(m,
+						"0x%x 0x%llx 0x%llx 0x%x %d %d %d %pd",
+						tcon->tid,
+						ses->Suid,
+						cfile->fid.persistent_fid,
+						cfile->f_flags,
+						cfile->count,
+						cfile->pid,
+						from_kuid(&init_user_ns, cfile->uid),
+						cfile->dentry);
 				}
 				spin_unlock(&tcon->open_file_lock);
 			}
@@ -889,6 +925,8 @@ cifs_proc_init(void)
 
 	proc_create_single("open_files", 0400, proc_fs_cifs,
 			cifs_debug_files_proc_show);
+	proc_create_single("open_dirs", 0400, proc_fs_cifs,
+			cifs_debug_dirs_proc_show);
 
 	proc_create("Stats", 0644, proc_fs_cifs, &cifs_stats_proc_ops);
 	proc_create("cifsFYI", 0644, proc_fs_cifs, &cifsFYI_proc_ops);

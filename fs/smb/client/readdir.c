@@ -371,6 +371,7 @@ _initiate_cifs_search(const unsigned int xid, struct file *file,
 	int rc = 0;
 	struct cifsFileInfo *cifsFile;
 	struct cifs_sb_info *cifs_sb = CIFS_FILE_SB(file);
+	struct dentry *dentry = file_dentry(file);
 	struct tcon_link *tlink = NULL;
 	struct cifs_tcon *tcon;
 	struct TCP_Server_Info *server;
@@ -404,6 +405,12 @@ _initiate_cifs_search(const unsigned int xid, struct file *file,
 	cifsFile->invalidHandle = true;
 	cifsFile->srch_inf.endOfSearch = false;
 
+	cifsFile->count = 1;
+	cifsFile->pid = current->tgid;
+	cifsFile->uid = current_fsuid();
+	cifsFile->dentry = dget(dentry);
+	cifsFile->f_flags = file->f_flags;
+
 	cifs_dbg(FYI, "Full path: %s start at: %lld\n", full_path, file->f_pos);
 
 ffirst_retry:
@@ -431,8 +438,11 @@ ffirst_retry:
 					  &cifsFile->fid, search_flags,
 					  &cifsFile->srch_inf);
 
-	if (rc == 0)
+	if (rc == 0) {
 		cifsFile->invalidHandle = false;
+		list_add(&cifsFile->tlist, &tcon->openDirList);
+		atomic_inc(&tcon->num_local_opens);
+	}
 	/* BB add following call to handle readdir on new NTFS symlink errors
 	else if STATUS_STOPPED_ON_SYMLINK
 		call get_symlink_reparse_path and retry with new path */
