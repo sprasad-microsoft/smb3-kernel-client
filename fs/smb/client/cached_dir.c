@@ -200,6 +200,12 @@ replay_again:
 	}
 
 	/*
+	 * the following is a critical section. We need to make sure that the
+	 * callers are serialized per-cfid
+	 */
+	mutex_lock(&cfid->cfid_mutex);
+
+	/*
 	 * check again that the cfid is valid (with mutex held this time).
 	 * Return cached fid if it is valid (has a lease and has a time).
 	 * Otherwise, it is either a new entry or laundromat worker removed it
@@ -210,11 +216,13 @@ replay_again:
 	if (cfid->has_lease && cfid->time) {
 		cfid->last_access_time = jiffies;
 		spin_unlock(&cfid->fid_lock);
+		mutex_unlock(&cfid->cfid_mutex);
 		*ret_cfid = cfid;
 		kfree(utf16_path);
 		return 0;
 	} else if (!cfid->has_lease) {
 		spin_unlock(&cfid->fid_lock);
+		mutex_unlock(&cfid->cfid_mutex);
 		/* drop the ref that we have */
 		kref_put(&cfid->refcount, smb2_close_cached_fid);
 		kfree(utf16_path);
@@ -415,12 +423,15 @@ out:
 		}
 		spin_unlock(&cfid->fid_lock);
 		spin_unlock(&cfids->cfid_list_lock);
+		mutex_unlock(&cfid->cfid_mutex);
 
 		kref_put(&cfid->refcount, smb2_close_cached_fid);
 	} else {
+		mutex_unlock(&cfid->cfid_mutex);
 		*ret_cfid = cfid;
 		atomic_inc(&tcon->num_remote_opens);
 	}
+
 	kfree(utf16_path);
 
 	if (is_replayable_error(rc) &&
@@ -464,6 +475,9 @@ smb2_close_cached_fid(struct kref *ref)
 					       refcount);
 	int rc;
 
+	/* make sure not to race with server open */
+	mutex_lock(&cfid->cfid_mutex);
+
 	spin_lock(&cfid->cfids->cfid_list_lock);
 	if (cfid->on_list) {
 		list_del(&cfid->entry);
@@ -484,6 +498,7 @@ smb2_close_cached_fid(struct kref *ref)
 		if (rc) /* should we retry on -EBUSY or -EAGAIN? */
 			cifs_dbg(VFS, "close cached dir rc %d\n", rc);
 	}
+	mutex_unlock(&cfid->cfid_mutex);
 
 	free_cached_dir(cfid);
 }
@@ -708,6 +723,7 @@ static struct cached_fid *init_cached_dir(const char *path)
 	INIT_LIST_HEAD(&cfid->entry);
 	INIT_LIST_HEAD(&cfid->dirents.entries);
 	mutex_init(&cfid->dirents.de_mutex);
+	mutex_init(&cfid->cfid_mutex);
 	spin_lock_init(&cfid->fid_lock);
 	kref_init(&cfid->refcount);
 	return cfid;
