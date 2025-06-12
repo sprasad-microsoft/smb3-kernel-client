@@ -321,6 +321,14 @@ replay_again:
 	oparms.fid->mid = le64_to_cpu(o_rsp->hdr.MessageId);
 #endif /* CIFS_DEBUG2 */
 
+	/*
+	 * regardless of what failures happen from this point, we should close
+	 * the handle.
+	 */
+	spin_lock(&cfid->fid_lock);
+	cfid->is_open = true;
+	cfid->tcon = tcon;
+	spin_unlock(&cfid->fid_lock);
 
 	if (o_rsp->OplockLevel != SMB2_OPLOCK_LEVEL_LEASE) {
 		rc = -EINVAL;
@@ -362,8 +370,6 @@ replay_again:
 	}
 	spin_lock(&cfid->fid_lock);
 	cfid->dentry = dentry;
-	cfid->tcon = tcon;
-	cfid->is_open = true;
 	cfid->time = jiffies;
 	cfid->last_access_time = jiffies;
 	spin_unlock(&cfid->fid_lock);
