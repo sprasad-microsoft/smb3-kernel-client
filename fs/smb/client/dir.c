@@ -348,23 +348,13 @@ static int __cifs_do_create(struct inode *dir, struct dentry *direntry,
 retry_open:
 	if (tcon->cfids && direntry->d_parent && server->dialect >= SMB30_PROT_ID) {
 		parent_cfid = NULL;
-		spin_lock(&tcon->cfids->cfid_list_lock);
-		list_for_each_entry(parent_cfid, &tcon->cfids->entries, entry) {
-			if (parent_cfid->dentry == direntry->d_parent) {
-				cifs_dbg(FYI, "found a parent cached file handle\n");
-				if (is_valid_cached_dir(parent_cfid)) {
-					lease_flags
-						|= SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET_LE;
-					memcpy(fid->parent_lease_key,
-					       parent_cfid->fid.lease_key,
-					       SMB2_LEASE_KEY_SIZE);
-					parent_cfid->dirents.is_valid = false;
-					parent_cfid->dirents.is_failed = true;
-				}
-				break;
-			}
+		if (!open_cached_dir_by_dentry(tcon, direntry->d_parent,
+					      &parent_cfid)) {
+			cifs_dbg(FYI, "found a parent cached file handle\n");
+			if (cached_dir_copy_lease_key(parent_cfid,
+					      fid->parent_lease_key))
+				lease_flags |= SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET_LE;
 		}
-		spin_unlock(&tcon->cfids->cfid_list_lock);
 	}
 
 	oparms = (struct cifs_open_parms) {
@@ -382,6 +372,10 @@ retry_open:
 	if (rc) {
 		cifs_dbg(FYI, "cifs_create returned 0x%x\n", rc);
 		if (rc == -EACCES && rdwr_for_fscache == 1) {
+			if (parent_cfid) {
+				close_cached_dir(parent_cfid);
+				parent_cfid = NULL;
+			}
 			desired_access &= ~GENERIC_READ;
 			rdwr_for_fscache = 2;
 			goto retry_open;
@@ -476,6 +470,21 @@ cifs_create_set_dentry:
 	}
 
 	*inode = newinode;
+	if (newinode && parent_cfid) {
+		struct cifs_fattr fattr;
+		bool cache_updated;
+
+		cifs_inode_to_fattr(newinode, &fattr);
+		cache_updated = update_dirent_in_cached_dir(parent_cfid,
+						    direntry->d_name.name,
+						    direntry->d_name.len,
+						    &fattr);
+		if (!cache_updated)
+			invalidate_cached_dir_contents(parent_cfid);
+	}
+
+	if (parent_cfid)
+		close_cached_dir(parent_cfid);
 	return rc;
 
 out_err:
@@ -483,6 +492,8 @@ out_err:
 		server->ops->close(xid, tcon, fid);
 	if (newinode)
 		iput(newinode);
+	if (parent_cfid)
+		close_cached_dir(parent_cfid);
 	return rc;
 }
 
@@ -803,22 +814,35 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry,
 
 		cifs_dbg(FYI, "NULL inode in lookup\n");
 
-		/*
-		 * We can only rely on negative dentries having the same
-		 * spelling as the cached dirent if case insensitivity is
-		 * forced on mount.
-		 *
-		 * XXX: if servers correctly announce Case Sensitivity Search
-		 * on GetInfo of FileFSAttributeInformation, then we can take
-		 * correct action even if case insensitive is not forced on
-		 * mount.
-		 */
-		if (pTcon->nocase && !open_cached_dir_by_dentry(pTcon, direntry->d_parent, &cfid)) {
+		if (!open_cached_dir_by_dentry(pTcon, direntry->d_parent, &cfid)) {
+			struct qstr qname = QSTR_INIT(direntry->d_name.name, direntry->d_name.len);
+			struct cached_dirent_lookup_result lookup = {};
+			int rc_lookup;
+			int rc_wait;
+
+			rc_wait = cifs_wait_for_pending_dcache(cfid, qname.name, qname.len);
+			if (rc_wait == -ETIMEDOUT)
+				cifs_dbg(FYI, "Wait for pending dcache entry timed out\n");
+
+			rc_lookup = lookup_cached_dir(cfid, qname.name,
+							       qname.len, &lookup);
+			if (!rc_lookup && lookup.found && lookup.under_active_lease) {
+				newInode = cifs_iget(parent_dir_inode->i_sb, &lookup.fattr);
+				close_cached_dir(cfid);
+				if (!newInode) {
+					de = ERR_PTR(-ENOMEM);
+					goto free_dentry_path;
+				}
+				rc = 0;
+				renew_parental_timestamps(direntry);
+				goto out;
+			}
+
 			/*
 			 * dentry is negative and parent is fully cached:
-			 * we can assume file does not exist
+			 * we can assume file does not exist if case sensitive
 			 */
-			if (cfid->dirents.is_valid) {
+			if (pTcon->nocase && cfid->dirents.is_valid) {
 				close_cached_dir(cfid);
 				goto out;
 			}
@@ -929,7 +953,12 @@ cifs_d_revalidate(struct inode *dir, const struct qstr *name,
 			 * dentry is negative and parent is fully cached:
 			 * we can assume file does not exist
 			 */
-			if (cfid->dirents.is_valid) {
+			bool dirents_valid;
+
+			mutex_lock(&cfid->dirents.de_mutex);
+			dirents_valid = cfid->dirents.is_valid;
+			mutex_unlock(&cfid->dirents.de_mutex);
+			if (dirents_valid) {
 				close_cached_dir(cfid);
 				return 1;
 			}

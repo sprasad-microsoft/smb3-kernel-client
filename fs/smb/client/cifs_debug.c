@@ -328,7 +328,10 @@ static int cifs_debug_dirs_proc_show(struct seq_file *m, void *v)
 						cfids->num_entries,
 						(unsigned long)atomic_long_read(&cfids->total_dirents_entries),
 						(unsigned long long)atomic64_read(&cfids->total_dirents_bytes));
-				list_for_each_entry(cfid, &cfids->entries, entry) {
+				for (struct rb_node *rb_node = rb_first(&cfids->entries);
+				     rb_node; rb_node = rb_next(rb_node)) {
+					cfid = rb_entry(rb_node, struct cached_fid, node);
+					spin_lock(&cfid->cfid_lock);
 					seq_printf(m, "0x%x 0x%llx 0x%llx ",
 						tcon->tid,
 						ses->Suid,
@@ -340,11 +343,13 @@ static int cifs_debug_dirs_proc_show(struct seq_file *m, void *v)
 					seq_printf(m, "%s", cfid->path);
 					if (cfid->file_all_info_is_valid)
 						seq_printf(m, "\tvalid file info");
+					spin_unlock(&cfid->cfid_lock);
 					if (cfid->dirents.is_valid)
 						seq_printf(m, ", valid dirents");
-					if (!list_empty(&cfid->dirents.entries))
+					if (READ_ONCE(cfid->dirents.entries_count))
 						seq_printf(m, ", dirents: %lu entries, %lu bytes",
-						cfid->dirents.entries_count, cfid->dirents.bytes_used);
+						READ_ONCE(cfid->dirents.entries_count),
+						READ_ONCE(cfid->dirents.bytes_used));
 					seq_printf(m, "\n");
 				}
 				spin_unlock(&cfids->cfid_list_lock);
@@ -372,22 +377,8 @@ static ssize_t cifs_debug_dirs_proc_write(struct file *file, const char __user *
 	if (rc)
 		return rc;
 
-	if (v == 0) {
-		struct TCP_Server_Info *server;
-		struct cifs_ses *ses;
-		struct cifs_tcon *tcon;
-
-		spin_lock(&cifs_tcp_ses_lock);
-		list_for_each_entry(server, &cifs_tcp_ses_list, tcp_ses_list) {
-			list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
-				if (cifs_ses_exiting(ses))
-					continue;
-				list_for_each_entry(tcon, &ses->tcon_list, tcon_list)
-					invalidate_all_cached_dirs(tcon, false);
-			}
-		}
-		spin_unlock(&cifs_tcp_ses_lock);
-	}
+	if (v == 0)
+		cifs_shrink_dir_caches(false, ULONG_MAX);
 
 	return count;
 }

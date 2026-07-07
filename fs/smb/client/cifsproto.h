@@ -180,6 +180,7 @@ void cifs_unix_basic_to_fattr(struct cifs_fattr *fattr,
 void cifs_dir_info_to_fattr(struct cifs_fattr *fattr,
 			    FILE_DIRECTORY_INFO *info,
 			    struct cifs_sb_info *cifs_sb);
+void cifs_inode_to_fattr(struct inode *inode, struct cifs_fattr *fattr);
 int cifs_fattr_to_inode(struct inode *inode, struct cifs_fattr *fattr,
 			bool from_readdir);
 struct inode *cifs_iget(struct super_block *sb, struct cifs_fattr *fattr);
@@ -336,6 +337,9 @@ struct cifs_ses *cifs_get_smb_ses(struct TCP_Server_Info *server,
 
 int cifs_readv_receive(struct TCP_Server_Info *server,
 		       struct mid_q_entry *mid);
+
+int cifs_query_dir_receive(struct TCP_Server_Info *server,
+			    struct mid_q_entry *mid);
 
 int cifs_query_mf_symlink(unsigned int xid, struct cifs_tcon *tcon,
 			  struct cifs_sb_info *cifs_sb,
