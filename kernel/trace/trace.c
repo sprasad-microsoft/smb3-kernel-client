@@ -87,7 +87,7 @@ void __init disable_tracing_selftest(const char *reason)
 
 /* Pipe tracepoints to printk */
 static struct trace_iterator *tracepoint_print_iter;
-int tracepoint_printk;
+static int tracepoint_printk;
 static bool tracepoint_printk_stop_on_boot __initdata;
 static bool traceoff_after_boot __initdata;
 static DEFINE_STATIC_KEY_FALSE(tracepoint_printk_key);
@@ -1788,7 +1788,7 @@ void trace_buffered_event_enable(void)
 
 		per_cpu(trace_buffered_event, cpu) = event;
 
-		scoped_guard(preempt,) {
+		scoped_guard(preempt) {
 			if (cpu == smp_processor_id() &&
 			    __this_cpu_read(trace_buffered_event) !=
 			    per_cpu(trace_buffered_event, cpu))
@@ -2338,15 +2338,6 @@ void trace_last_func_repeats(struct trace_array *tr,
 	__buffer_unlock_commit(buffer, event);
 }
 
-static void trace_iterator_increment(struct trace_iterator *iter)
-{
-	struct ring_buffer_iter *buf_iter = trace_buffer_iter(iter, iter->cpu);
-
-	iter->idx++;
-	if (buf_iter)
-		ring_buffer_iter_advance(buf_iter);
-}
-
 static struct trace_entry *
 peek_next_entry(struct trace_iterator *iter, int cpu, u64 *ts,
 		unsigned long *lost_events)
@@ -2676,11 +2667,17 @@ struct trace_entry *trace_find_next_entry(struct trace_iterator *iter,
 /* Find the next real entry, and increment the iterator to the next entry */
 void *trace_find_next_entry_inc(struct trace_iterator *iter)
 {
+	struct ring_buffer_iter *buf_iter;
+
 	iter->ent = __find_next_entry(iter, &iter->cpu,
 				      &iter->lost_events, &iter->ts);
 
-	if (iter->ent)
-		trace_iterator_increment(iter);
+	if (iter->ent) {
+		iter->idx++;
+		buf_iter = trace_buffer_iter(iter, iter->cpu);
+		if (buf_iter)
+			ring_buffer_iter_advance(buf_iter);
+	}
 
 	return iter->ent ? iter : NULL;
 }
@@ -4323,14 +4320,16 @@ static const char readme_msg[] =
 	"\t     args: <name>=fetcharg[:type]\n"
 	"\t fetcharg: (%<register>|$<efield>), @<address>, @<symbol>[+|-<offset>],\n"
 #ifdef CONFIG_HAVE_FUNCTION_ARG_ACCESS_API
-	"\t           $stack<index>, $stack, $retval, $comm, $arg<N>,\n"
+	"\t           $stack<index>, $stack, $retval, $comm, $arg<N>, $current\n"
 #ifdef CONFIG_PROBE_EVENTS_BTF_ARGS
-	"\t           <argname>[->field[->field|.field...]],\n"
+	"\t           [(structname[,field])]<argname>[->field[->field|.field...]],\n"
+	"\t           [(structname[,field])](fetcharg)->field[->field|.field...],\n"
 #endif
 #else
-	"\t           $stack<index>, $stack, $retval, $comm,\n"
+	"\t           $stack<index>, $stack, $retval, $comm, $current\n"
 #endif
 	"\t           +|-[u]<offset>(<fetcharg>), \\imm-value, \\\"imm-string\"\n"
+	"\t           this_cpu_read(<fetcharg>), this_cpu_ptr(<fetcharg>)\n"
 	"\t     kernel return probes support: $retval, $arg<N>, $comm\n"
 	"\t     type: s8/16/32/64, u8/16/32/64, x8/16/32/64, char, string, symbol,\n"
 	"\t           b<bit-width>@<bit-offset>/<container-size>, ustring,\n"
@@ -4474,7 +4473,7 @@ static const char readme_msg[] =
 	"\t        snapshot()                           - snapshot the trace buffer\n\n"
 #endif
 #ifdef CONFIG_SYNTH_EVENTS
-	"  events/synthetic_events\t- Create/append/remove/show synthetic events\n"
+	"  synthetic_events\t- Create/append/remove/show synthetic events\n"
 	"\t  Write into this file to define/undefine new synthetic events.\n"
 	"\t     example: echo 'myevent u64 lat; char name[]; long[] stack' >> synthetic_events\n"
 #endif
@@ -4672,7 +4671,7 @@ trace_event_update_with_eval_map(struct module *mod,
 
 	map = start;
 
-	trace_event_update_all(map, len);
+	trace_event_update_all(map, len, mod);
 
 	if (len <= 0)
 		return;
@@ -5018,7 +5017,6 @@ int tracing_set_tracer(struct trace_array *tr, const char *buf)
 						RING_BUFFER_ALL_CPUS);
 		if (ret < 0)
 			return ret;
-		ret = 0;
 	}
 
 	list_for_each_entry(t, &tr->tracers, list) {
@@ -6191,7 +6189,7 @@ char *trace_user_fault_read(struct trace_user_buf_info *tinfo,
 {
 	int cpu = smp_processor_id();
 	char *buffer = per_cpu_ptr(tinfo->tbuf, cpu)->buf;
-	unsigned int cnt;
+	unsigned long long cnt;
 	int trys = 0;
 	int ret;
 
@@ -7928,8 +7926,8 @@ create_trace_option_files(struct trace_array *tr, struct tracer *tracer,
 	if (!topts)
 		return 0;
 
-	tr_topts = krealloc(tr->topts, sizeof(*tr->topts) * (tr->nr_topts + 1),
-			    GFP_KERNEL);
+	tr_topts = krealloc_array(tr->topts, tr->nr_topts + 1, sizeof(*tr->topts),
+				  GFP_KERNEL);
 	if (!tr_topts) {
 		kfree(topts);
 		return -ENOMEM;
@@ -8218,6 +8216,8 @@ buffer_subbuf_size_write(struct file *filp, const char __user *ubuf,
 	/* Do not allow tracing while changing the order of the ring buffer */
 	tracing_stop_tr(tr);
 
+	trace_access_lock(RING_BUFFER_ALL_CPUS);
+
 	old_order = ring_buffer_subbuf_order_get(tr->array_buffer.buffer);
 	if (old_order == order)
 		goto out;
@@ -8257,6 +8257,7 @@ buffer_subbuf_size_write(struct file *filp, const char __user *ubuf,
 #endif
 	(*ppos)++;
  out:
+	trace_access_unlock(RING_BUFFER_ALL_CPUS);
 	if (ret)
 		cnt = ret;
 	tracing_start_tr(tr);
@@ -8383,6 +8384,8 @@ static void setup_trace_scratch(struct trace_array *tr,
 	memset(tscratch, 0, size);
 }
 
+#define TRACE_TEST_PTRACING_NAME	"ptracingtest"
+
 int allocate_trace_buffer(struct trace_array *tr, struct array_buffer *buf, int size)
 {
 	enum ring_buffer_flags rb_flags;
@@ -8394,6 +8397,8 @@ int allocate_trace_buffer(struct trace_array *tr, struct array_buffer *buf, int 
 	buf->tr = tr;
 
 	if (tr->range_addr_start && tr->range_addr_size) {
+		if (tr->name && !strcmp(tr->name, TRACE_TEST_PTRACING_NAME))
+			rb_flags |= RB_FL_TESTING;
 		/* Add scratch buffer to handle 128 modules */
 		buf->buffer = ring_buffer_alloc_range(size, rb_flags, 0,
 						      tr->range_addr_start,
@@ -9726,7 +9731,8 @@ __init static void enable_instances(void)
 
 		tr = trace_array_create_systems(name, NULL, addr, size);
 		if (IS_ERR(tr)) {
-			pr_warn("Tracing: Failed to create instance buffer %s\n", curr_str);
+			pr_warn("Tracing: Failed to create instance buffer '%s' (%ld)\n", name,
+				PTR_ERR(tr));
 			continue;
 		}
 

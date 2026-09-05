@@ -570,9 +570,12 @@ retry:
 
 SYSCALL_DEFINE1(fchdir, unsigned int, fd)
 {
-	CLASS(fd_raw, f)(fd);
 	int error;
 
+	if ((int)fd == FD_FAILFS_ROOT)
+		return failfs_current_chdir();
+
+	CLASS(fd_raw, f)(fd);
 	if (fd_empty(f))
 		return -EBADF;
 
@@ -612,6 +615,52 @@ dput_and_out:
 		lookup_flags |= LOOKUP_REVAL;
 		goto retry;
 	}
+	return error;
+}
+
+SYSCALL_DEFINE2(fchroot, int, fd, unsigned int, flags)
+{
+	struct path path;
+	int error;
+
+	if (flags)
+		return -EINVAL;
+
+	if (fd == FD_FAILFS_ROOT) {
+		if (!ns_capable(current_user_ns(), CAP_SYS_CHROOT)) {
+			if (!task_no_new_privs(current))
+				return -EPERM;
+			/* A shared fs_struct lets a sibling exec setuid past the check above. */
+			if (current->fs->users != 1)
+				return -EINVAL;
+			/* Moving the root to failfs lifts the old root's ".." barrier. */
+			if (current_chrooted())
+				return -EPERM;
+		}
+		failfs_get_root(&path);
+	} else {
+		CLASS(fd_raw, f)(fd);
+		if (fd_empty(f))
+			return -EBADF;
+
+		if (!d_can_lookup(fd_file(f)->f_path.dentry))
+			return -ENOTDIR;
+
+		error = file_permission(fd_file(f), MAY_EXEC | MAY_CHDIR);
+		if (error)
+			return error;
+
+		if (!ns_capable(current_user_ns(), CAP_SYS_CHROOT))
+			return -EPERM;
+
+		path = fd_file(f)->f_path;
+		path_get(&path);
+	}
+
+	error = security_path_chroot(&path);
+	if (!error)
+		set_fs_root(current->fs, &path);
+	path_put(&path);
 	return error;
 }
 
@@ -967,33 +1016,6 @@ static int do_dentry_open(struct file *f,
 
 	if ((f->f_flags & O_DIRECT) && !(f->f_mode & FMODE_CAN_ODIRECT))
 		return -EINVAL;
-
-	/*
-	 * XXX: Huge page cache doesn't support writing yet. Drop all page
-	 * cache for this file before processing writes.
-	 */
-	if (f->f_mode & FMODE_WRITE) {
-		/*
-		 * Depends on full fence from get_write_access() to synchronize
-		 * against collapse_file() regarding i_writecount and nr_thps
-		 * updates. Ensures subsequent insertion of THPs into the page
-		 * cache will fail.
-		 */
-		if (filemap_nr_thps(inode->i_mapping)) {
-			struct address_space *mapping = inode->i_mapping;
-
-			filemap_invalidate_lock(inode->i_mapping);
-			/*
-			 * unmap_mapping_range just need to be called once
-			 * here, because the private pages is not need to be
-			 * unmapped mapping (e.g. data segment of dynamic
-			 * shared libraries here).
-			 */
-			unmap_mapping_range(mapping, 0, 0, 0);
-			truncate_inode_pages(mapping, 0);
-			filemap_invalidate_unlock(inode->i_mapping);
-		}
-	}
 
 	return 0;
 

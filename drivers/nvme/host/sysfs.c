@@ -240,8 +240,10 @@ static ssize_t nuse_show(struct device *dev, struct device_attribute *attr,
 		ret = ns_head_update_nuse(head);
 	else
 		ret = ns_update_nuse(disk->private_data);
-	if (ret)
+	if (ret < 0)
 		return ret;
+	else if (ret > 0)
+		return -EIO;
 
 	return sysfs_emit(buf, "%llu\n", head->nuse);
 }
@@ -394,7 +396,7 @@ static ssize_t nvme_io_errors_store(struct device *dev,
 	return count;
 }
 
-struct device_attribute dev_attr_io_errors =
+static struct device_attribute dev_attr_io_errors =
 	__ATTR(command_error_count, 0644,
 		nvme_io_errors_show, nvme_io_errors_store);
 
@@ -441,7 +443,7 @@ static umode_t nvme_ns_diag_attrs_are_visible(struct kobject *kobj,
 	return a->mode;
 }
 
-const struct attribute_group nvme_ns_diag_attr_group = {
+static const struct attribute_group nvme_ns_diag_attr_group = {
 	.name		= "diag",
 	.attrs		= nvme_ns_diag_attrs,
 	.is_visible	= nvme_ns_diag_attrs_are_visible,
@@ -1147,7 +1149,7 @@ static ssize_t nvme_adm_errors_store(struct device *dev,
 	return count;
 }
 
-struct device_attribute dev_attr_adm_errors =
+static struct device_attribute dev_attr_adm_errors =
 	__ATTR(command_error_count, 0644,
 		nvme_adm_errors_show, nvme_adm_errors_store);
 

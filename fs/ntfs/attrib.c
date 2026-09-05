@@ -16,6 +16,7 @@
  * Copyright (c) 2010 Erik Larsson
  */
 
+#include <linux/string_choices.h>
 #include <linux/writeback.h>
 #include <linux/iomap.h>
 
@@ -174,7 +175,10 @@ int ntfs_map_runlist_nolock(struct ntfs_inode *ni, s64 vcn, struct ntfs_attr_sea
 				err = -EIO;
 			goto err_out;
 		}
-		WARN_ON(!ctx->attr->non_resident);
+		if (unlikely(!ctx->attr->non_resident)) {
+			err = -EIO;
+			goto err_out;
+		}
 	}
 	a = ctx->attr;
 	/*
@@ -588,11 +592,188 @@ static u32 ntfs_resident_attr_min_value_length(const __le32 type)
 			sizeof(__le16) * 1;
 	case AT_VOLUME_INFORMATION:
 		return sizeof(struct volume_information);
+	case AT_INDEX_ROOT:
+		return sizeof(struct index_root);
 	case AT_EA_INFORMATION:
 		return sizeof(struct ea_information);
 	default:
 		return 0;
 	}
+}
+
+static bool ntfs_attr_type_is_resident_only(const __le32 type)
+{
+	switch (type) {
+	case AT_STANDARD_INFORMATION:
+	case AT_FILE_NAME:
+	case AT_OBJECT_ID:
+	case AT_VOLUME_NAME:
+	case AT_VOLUME_INFORMATION:
+	case AT_INDEX_ROOT:
+	case AT_EA_INFORMATION:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool ntfs_file_name_attr_value_is_valid(const u8 *value, const u32 value_length)
+{
+	const struct file_name_attr *fn;
+	u32 file_name_size;
+
+	fn = (const struct file_name_attr *)value;
+	file_name_size = fn->file_name_length * sizeof(__le16);
+
+	return file_name_size <=
+			value_length - offsetof(struct file_name_attr, file_name);
+}
+
+static bool ntfs_volume_name_attr_value_is_valid(const u32 value_length)
+{
+	if (value_length & 1)
+		return false;
+
+	return value_length <= NTFS_MAX_LABEL_LEN * sizeof(__le16);
+}
+
+static bool ntfs_index_root_attr_value_is_valid(const u8 *value, const u32 value_length)
+{
+	const struct index_root *ir;
+	u32 index_size;
+	u32 entries_offset;
+	u32 index_length;
+	u32 allocated_size;
+
+	ir = (const struct index_root *)value;
+	index_size = value_length - offsetof(struct index_root, index);
+	entries_offset = le32_to_cpu(ir->index.entries_offset);
+	index_length = le32_to_cpu(ir->index.index_length);
+	allocated_size = le32_to_cpu(ir->index.allocated_size);
+
+	if ((entries_offset | index_length | allocated_size) & 7 ||
+	    entries_offset < sizeof(struct index_header) ||
+	    entries_offset > index_length ||
+	    index_length > allocated_size ||
+	    allocated_size > index_size ||
+	    index_length - entries_offset < sizeof(struct index_entry_header))
+		return false;
+
+	return true;
+}
+
+struct ntfs_resident_attr_value {
+	const u8 *data;
+	u32 len;
+};
+
+static bool ntfs_resident_attr_value_get(const struct attr_record *a,
+					 struct ntfs_resident_attr_value *value)
+{
+	u32 attr_len;
+	u16 value_offset;
+
+	attr_len = le32_to_cpu(a->length);
+	if (attr_len < offsetof(struct attr_record, data.resident.reserved) +
+			sizeof(a->data.resident.reserved))
+		return false;
+
+	value->len = le32_to_cpu(a->data.resident.value_length);
+	value_offset = le16_to_cpu(a->data.resident.value_offset);
+
+	if (value->len > attr_len || value_offset > attr_len - value->len)
+		return false;
+
+	value->data = (const u8 *)a + value_offset;
+	return true;
+}
+
+static bool ntfs_non_resident_attr_value_is_valid(const struct attr_record *a)
+{
+	u32 attr_len;
+	u32 min_len;
+	u16 mp_offset;
+	u16 name_offset;
+	u32 name_end;
+
+	attr_len = le32_to_cpu(a->length);
+	min_len = offsetof(struct attr_record, data.non_resident.initialized_size) +
+		  sizeof(a->data.non_resident.initialized_size);
+
+	/* Sparse and compressed attributes have the extra compressed_size field */
+	if (a->flags & (ATTR_IS_SPARSE | ATTR_COMPRESSION_MASK))
+		min_len += sizeof(a->data.non_resident.compressed_size);
+
+	if (attr_len < min_len)
+		return false;
+
+	mp_offset = le16_to_cpu(a->data.non_resident.mapping_pairs_offset);
+	if (mp_offset < min_len || mp_offset > attr_len)
+		return false;
+
+	if (a->name_length) {
+		name_offset = le16_to_cpu(a->name_offset);
+
+		if (name_offset < min_len || name_offset >= attr_len)
+			return false;
+
+		name_end = name_offset + a->name_length * sizeof(__le16);
+		if (name_end > attr_len || name_end > mp_offset)
+			return false;
+	}
+
+	/* Ensure there's room for the compressed_size field if needed. */
+	if (!(a->flags & (ATTR_IS_SPARSE | ATTR_COMPRESSION_MASK)) &&
+	    attr_len - mp_offset <
+			sizeof(a->data.non_resident.compressed_size))
+		return false;
+
+	return true;
+}
+
+static bool ntfs_attr_value_is_valid(struct ntfs_volume *vol,
+				     const struct attr_record *a,
+				     const u64 mft_no)
+{
+	struct ntfs_resident_attr_value value;
+	u32 min_len;
+
+	if (a->non_resident) {
+		if (ntfs_attr_type_is_resident_only(a->type))
+			goto corrupt;
+		if (!ntfs_non_resident_attr_value_is_valid(a))
+			goto corrupt;
+		return true;
+	}
+
+	if (!ntfs_resident_attr_value_get(a, &value))
+		goto corrupt;
+
+	min_len = ntfs_resident_attr_min_value_length(a->type);
+	if (min_len && value.len < min_len)
+		goto corrupt;
+
+	switch (a->type) {
+	case AT_FILE_NAME:
+		if (!ntfs_file_name_attr_value_is_valid(value.data, value.len))
+			goto corrupt;
+		break;
+	case AT_VOLUME_NAME:
+		if (!ntfs_volume_name_attr_value_is_valid(value.len))
+			goto corrupt;
+		break;
+	case AT_INDEX_ROOT:
+		if (!ntfs_index_root_attr_value_is_valid(value.data, value.len))
+			goto corrupt;
+		break;
+	}
+	return true;
+
+corrupt:
+	ntfs_error(vol->sb,
+		   "Corrupt %#x attribute in MFT record %llu\n",
+		   le32_to_cpu(a->type), mft_no);
+	return false;
 }
 
 /*
@@ -705,8 +886,11 @@ static int ntfs_attr_find(const __le32 type, const __le16 *name,
 			}
 		}
 
-		if (type == AT_UNUSED)
+		if (type == AT_UNUSED) {
+			if (!ntfs_attr_value_is_valid(vol, a, ctx->ntfs_ino->mft_no))
+				break;
 			return 0;
+		}
 		if (a->type != type)
 			continue;
 		/*
@@ -747,37 +931,8 @@ static int ntfs_attr_find(const __le32 type, const __le16 *name,
 			}
 		}
 
-		 /* Validate attribute's value offset/length */
-		if (!a->non_resident) {
-			u32 min_len;
-			u32 value_length = le32_to_cpu(a->data.resident.value_length);
-			u16 value_offset = le16_to_cpu(a->data.resident.value_offset);
-
-			if (value_length > le32_to_cpu(a->length) ||
-			    value_offset > le32_to_cpu(a->length) - value_length)
-				break;
-
-			min_len = ntfs_resident_attr_min_value_length(a->type);
-			if (min_len && value_length < min_len) {
-				ntfs_error(vol->sb,
-					   "Too small %#x resident attribute value in MFT record %lld\n",
-					   le32_to_cpu(a->type), (long long)ctx->ntfs_ino->mft_no);
-				break;
-			}
-		} else {
-			u32 min_len;
-			u16 mp_offset;
-
-			min_len = offsetof(struct attr_record, data.non_resident.initialized_size) +
-				  sizeof(a->data.non_resident.initialized_size);
-			if (le32_to_cpu(a->length) < min_len)
-				break;
-
-			mp_offset = le16_to_cpu(a->data.non_resident.mapping_pairs_offset);
-			if (mp_offset < min_len ||
-			    mp_offset > le32_to_cpu(a->length))
-				break;
-		}
+		if (!ntfs_attr_value_is_valid(vol, a, ctx->ntfs_ino->mft_no))
+			break;
 
 		/*
 		 * The names match or @name not present and attribute is
@@ -843,11 +998,71 @@ char *ntfs_attr_name_get(const struct ntfs_volume *vol, const __le16 *uname,
 	return NULL;
 }
 
+/*
+ * ntfs_attr_list_entry_is_valid - sanity check one $ATTRIBUTE_LIST entry
+ * @ale:	the attribute-list entry to check
+ * @al_end:	end of the attribute-list buffer @ale lives in
+ *
+ * Verify that @ale is a well-formed attr_list_entry wholly contained in
+ * [.., @al_end): its fixed header must lie in range before any field is
+ * dereferenced, its length must be a multiple of 8 that covers the fixed
+ * header plus the name, the name must lie within the buffer, the entry must
+ * be in use and carry a live MFT reference.  Return true if valid.
+ */
+bool ntfs_attr_list_entry_is_valid(const struct attr_list_entry *ale,
+				   const u8 *al_end)
+{
+	const u8 *al = (const u8 *)ale;
+	u16 ale_len;
+
+	/* The fixed header must be in bounds before it is parsed. */
+	if (al + offsetof(struct attr_list_entry, name) > al_end)
+		return false;
+	ale_len = le16_to_cpu(ale->length);
+	/* On-disk entries are 8-byte aligned (see struct attr_list_entry). */
+	if (ale_len & 7)
+		return false;
+	if (ale->name_offset != sizeof(struct attr_list_entry))
+		return false;
+	if ((u32)ale->name_offset +
+	    (u32)ale->name_length * sizeof(__le16) > ale_len ||
+	    al + ale_len > al_end)
+		return false;
+	if (ale->type == AT_UNUSED)
+		return false;
+	if (MSEQNO_LE(ale->mft_reference) == 0)
+		return false;
+	return true;
+}
+
+/*
+ * ntfs_attr_list_is_valid - sanity check an in-memory $ATTRIBUTE_LIST
+ * @al_start:	start of the attribute list buffer
+ * @size:	length of the attribute list in bytes
+ *
+ * Verify that [@al_start, @al_start + @size) is a sequence of valid
+ * attr_list_entry records (see ntfs_attr_list_entry_is_valid()) that tile the
+ * buffer exactly.  Return true if valid, false otherwise.
+ */
+bool ntfs_attr_list_is_valid(const u8 *al_start, s64 size)
+{
+	const u8 *al = al_start;
+	const u8 *al_end = al_start + size;
+
+	while (al < al_end) {
+		const struct attr_list_entry *ale =
+				(const struct attr_list_entry *)al;
+
+		if (!ntfs_attr_list_entry_is_valid(ale, al_end))
+			return false;
+		al += le16_to_cpu(ale->length);
+	}
+	return al == al_end;
+}
+
 int load_attribute_list(struct ntfs_inode *base_ni, u8 *al_start, const s64 size)
 {
 	struct inode *attr_vi = NULL;
-	u8 *al;
-	struct attr_list_entry *ale;
 
 	if (!al_start || size <= 0)
 		return -EINVAL;
@@ -869,19 +1084,7 @@ int load_attribute_list(struct ntfs_inode *base_ni, u8 *al_start, const s64 size
 	}
 	iput(attr_vi);
 
-	for (al = al_start; al < al_start + size; al += le16_to_cpu(ale->length)) {
-		ale = (struct attr_list_entry *)al;
-		if (ale->name_offset != sizeof(struct attr_list_entry))
-			break;
-		if (le16_to_cpu(ale->length) <= ale->name_offset + ale->name_length ||
-		    al + le16_to_cpu(ale->length) > al_start + size)
-			break;
-		if (ale->type == AT_UNUSED)
-			break;
-		if (MSEQNO_LE(ale->mft_reference) == 0)
-			break;
-	}
-	if (al != al_start + size) {
+	if (!ntfs_attr_list_is_valid(al_start, size)) {
 		ntfs_error(base_ni->vol->sb, "Corrupt attribute list, mft = %llu",
 			   base_ni->mft_no);
 		return -EIO;
@@ -1137,9 +1340,8 @@ find_attr_list_attr:
 		 * we have reached the right one or the search has failed.
 		 */
 		if (lowest_vcn && (u8 *)next_al_entry >= al_start &&
-				(u8 *)next_al_entry + 6 < al_end &&
-				(u8 *)next_al_entry + le16_to_cpu(
-					next_al_entry->length) <= al_end &&
+				ntfs_attr_list_entry_is_valid(next_al_entry,
+							      al_end) &&
 				le64_to_cpu(next_al_entry->lowest_vcn) <=
 					lowest_vcn &&
 				next_al_entry->type == al_entry->type &&
@@ -1252,22 +1454,8 @@ do_next_attr_loop:
 
 		ctx->attr = a;
 
-		if (a->non_resident) {
-			u32 min_len;
-			u16 mp_offset;
-
-			min_len = offsetof(struct attr_record,
-					   data.non_resident.initialized_size) +
-				  sizeof(a->data.non_resident.initialized_size);
-
-			if (le32_to_cpu(a->length) < min_len)
-				break;
-
-			mp_offset =
-				le16_to_cpu(a->data.non_resident.mapping_pairs_offset);
-			if (mp_offset < min_len || mp_offset > attr_len)
-				break;
-		}
+		if (!ntfs_attr_value_is_valid(vol, a, ctx->ntfs_ino->mft_no))
+			break;
 
 		/*
 		 * If no @val specified or @val specified and it matches, we
@@ -1279,19 +1467,6 @@ do_next_attr_loop:
 			u32 value_length = le32_to_cpu(a->data.resident.value_length);
 			u16 value_offset = le16_to_cpu(a->data.resident.value_offset);
 
-			if (attr_len < offsetof(struct attr_record, data.resident.reserved) +
-					sizeof(a->data.resident.reserved))
-				break;
-			if (value_length > attr_len || value_offset > attr_len - value_length)
-				break;
-
-			value_length = ntfs_resident_attr_min_value_length(a->type);
-			if (value_length && le32_to_cpu(a->data.resident.value_length) <
-			    value_length) {
-				pr_err("Too small resident attribute value in MFT record %lld, type %#x\n",
-				       (long long)ctx->ntfs_ino->mft_no, a->type);
-				break;
-			}
 			if (value_length == val_len &&
 			    !memcmp((u8 *)a + value_offset, val, val_len)) {
 attr_found:
@@ -1855,7 +2030,7 @@ int ntfs_attr_make_non_resident(struct ntfs_inode *ni, const u32 data_size)
 		if (IS_ERR(rl)) {
 			err = PTR_ERR(rl);
 			ntfs_debug("Failed to allocate cluster%s, error code %i.",
-					ntfs_bytes_to_cluster(vol, new_size) > 1 ? "s" : "",
+					str_plural(ntfs_bytes_to_cluster(vol, new_size)),
 					err);
 			goto folio_err_out;
 		}
@@ -1962,7 +2137,7 @@ int ntfs_attr_make_non_resident(struct ntfs_inode *ni, const u32 data_size)
 		ni->runlist.count = 0;
 	write_lock_irqsave(&ni->size_lock, flags);
 	ni->allocated_size = new_size;
-	if (NInoSparse(ni) || NInoCompressed(ni)) {
+	if ((NInoSparse(ni) && !NInoWofCompressed(ni)) || NInoCompressed(ni)) {
 		ni->itype.compressed.size = ni->allocated_size;
 		if (a->data.non_resident.compression_unit) {
 			ni->itype.compressed.block_size = 1U <<
@@ -3383,8 +3558,13 @@ int ntfs_attr_record_move_away(struct ntfs_attr_search_ctx *ctx, int extra)
 	unmap_mft_record(ni);
 
 	err = ntfs_attr_record_move_to(ctx, ni);
-	if (err)
+	if (err) {
 		ntfs_error(sb, "Couldn't move attribute to MFT record");
+		if (ntfs_mft_record_free(base_ni->vol, ni))
+			ntfs_error(sb, "Couldn't free empty MFT record");
+		else
+			ntfs_inode_close(ni);
+	}
 
 	return err;
 }
@@ -4145,6 +4325,16 @@ static int ntfs_non_resident_attr_shrink(struct ntfs_inode *ni, const s64 newsiz
 		ni->initialized_size = newsize;
 		ctx->attr->data.non_resident.initialized_size = cpu_to_le64(newsize);
 	}
+
+	/*
+	 * Drop any page-cache folios that now lie beyond the shrunk
+	 * attribute. The clusters backing them have just been freed and the
+	 * runlist truncated, so leaving stale dirty folios around makes a
+	 * later writeback map a vcn past the new allocation, which fails with
+	 * -ENOENT and loses the write.
+	 */
+	truncate_inode_pages(VFS_I(ni)->i_mapping, newsize);
+
 	/* Update data size in the index. */
 	if (ni->type == AT_DATA && ni->name == AT_UNNAMED)
 		NInoSetFileNameDirty(ni);
@@ -4536,10 +4726,12 @@ attr_resize_again:
 	while (!(err = ntfs_attr_lookup(AT_UNUSED, NULL, 0, 0, 0, NULL, 0, ctx))) {
 		struct inode *tvi;
 		struct attr_record *a;
+		u32 value_len;
 
 		a = ctx->attr;
 		if (a->non_resident || a->type == AT_ATTRIBUTE_LIST)
 			continue;
+		value_len = le32_to_cpu(a->data.resident.value_length);
 
 		if (ntfs_attr_can_be_non_resident(vol, a->type))
 			continue;
@@ -4550,6 +4742,8 @@ attr_resize_again:
 		 */
 		if (le32_to_cpu(a->length) <= (sizeof(struct attr_record) - sizeof(s64)) +
 				((a->name_length * sizeof(__le16) + 7) & ~7) + 8)
+			continue;
+		if (a->type == AT_DATA && !value_len)
 			continue;
 
 		if (a->type == AT_DATA)
@@ -4563,8 +4757,7 @@ attr_resize_again:
 			continue;
 		}
 
-		if (ntfs_attr_make_non_resident(NTFS_I(tvi),
-		    le32_to_cpu(ctx->attr->data.resident.value_length))) {
+		if (ntfs_attr_make_non_resident(NTFS_I(tvi), value_len)) {
 			iput(tvi);
 			continue;
 		}
@@ -5103,6 +5296,7 @@ int ntfs_attr_remove(struct ntfs_inode *ni, const __le32 type, __le16 *name,
  * On success a buffer is allocated with the content of the attribute
  * and which needs to be freed when it's not needed anymore. If the
  * @data_size parameter is non-NULL then the data size is set there.
+ * On error, an ERR_PTR() containing the negative error code is returned.
  */
 void *ntfs_attr_readall(struct ntfs_inode *ni, const __le32 type,
 		__le16 *name, u32 name_len, s64 *data_size)
@@ -5117,6 +5311,7 @@ void *ntfs_attr_readall(struct ntfs_inode *ni, const __le32 type,
 
 	bmp_vi = ntfs_attr_iget(VFS_I(ni), type, name, name_len);
 	if (IS_ERR(bmp_vi)) {
+		ret = ERR_PTR(PTR_ERR(bmp_vi));
 		ntfs_debug("ntfs_attr_iget failed");
 		goto err_exit;
 	}
@@ -5126,17 +5321,21 @@ void *ntfs_attr_readall(struct ntfs_inode *ni, const __le32 type,
 		(bmp_ni->type != AT_BITMAP ||
 		bmp_ni->data_size > ((ni->vol->nr_clusters + 7) >> 3))) {
 		ntfs_error(sb, "Invalid attribute data size");
+		ret = ERR_PTR(-EIO);
 		goto out;
 	}
 
 	data = kvmalloc(bmp_ni->data_size, GFP_NOFS);
-	if (!data)
+	if (!data) {
+		ret = ERR_PTR(-ENOMEM);
 		goto out;
+	}
 
 	size = ntfs_inode_attr_pread(VFS_I(bmp_ni), 0, bmp_ni->data_size,
 			(u8 *)data);
 	if (size != bmp_ni->data_size) {
 		ntfs_error(sb, "ntfs_attr_pread failed");
+		ret = size < 0 ? ERR_PTR((int)size) : ERR_PTR(-EIO);
 		kvfree(data);
 		goto out;
 	}
@@ -5177,6 +5376,7 @@ int ntfs_non_resident_attr_insert_range(struct ntfs_inode *ni, s64 start_vcn, s6
 	ret = ntfs_attr_map_whole_runlist(ni);
 	if (ret) {
 		up_write(&ni->runlist.lock);
+		kfree(hole_rl);
 		return ret;
 	}
 
@@ -5388,6 +5588,7 @@ int ntfs_attr_fallocate(struct ntfs_inode *ni, loff_t start, loff_t byte_len, bo
 	s64 old_data_size;
 	s64 vcn_start, vcn_end, vcn_uninit, vcn, try_alloc_cnt;
 	s64 lcn, alloc_cnt;
+	s64 rl_lcn, rl_length, rl_vcn;
 	int err = 0;
 	struct runlist_element *rl;
 	bool balloc;
@@ -5467,19 +5668,23 @@ int ntfs_attr_fallocate(struct ntfs_inode *ni, loff_t start, loff_t byte_len, bo
 	while (vcn < vcn_uninit) {
 		down_read(&ni->runlist.lock);
 		rl = ntfs_attr_find_vcn_nolock(ni, vcn, NULL);
-		up_read(&ni->runlist.lock);
 		if (IS_ERR(rl)) {
+			up_read(&ni->runlist.lock);
 			err = PTR_ERR(rl);
 			goto out;
 		}
+		rl_lcn = rl->lcn;
+		rl_length = rl->length;
+		rl_vcn = rl->vcn;
+		up_read(&ni->runlist.lock);
 
-		if (rl->lcn > 0) {
-			vcn += rl->length - (vcn - rl->vcn);
-		} else if (rl->lcn == LCN_DELALLOC || rl->lcn == LCN_HOLE) {
-			try_alloc_cnt = min(rl->length - (vcn - rl->vcn),
+		if (rl_lcn > 0) {
+			vcn += rl_length - (vcn - rl_vcn);
+		} else if (rl_lcn == LCN_DELALLOC || rl_lcn == LCN_HOLE) {
+			try_alloc_cnt = min(rl_length - (vcn - rl_vcn),
 					    vcn_uninit - vcn);
 
-			if (rl->lcn == LCN_DELALLOC) {
+			if (rl_lcn == LCN_DELALLOC) {
 				vcn += try_alloc_cnt;
 				continue;
 			}
@@ -5494,11 +5699,14 @@ int ntfs_attr_fallocate(struct ntfs_inode *ni, loff_t start, loff_t byte_len, bo
 				if (err)
 					goto out;
 
-				err = ntfs_dio_zero_range(VFS_I(ni),
-							  lcn << vol->cluster_size_bits,
-							  alloc_cnt << vol->cluster_size_bits);
-				if (err > 0)
-					goto out;
+				if (balloc) {
+					err = ntfs_dio_zero_range(VFS_I(ni),
+								  lcn << vol->cluster_size_bits,
+								  alloc_cnt <<
+								  vol->cluster_size_bits);
+					if (err > 0)
+						goto out;
+				}
 
 				if (signal_pending(current))
 					goto out;

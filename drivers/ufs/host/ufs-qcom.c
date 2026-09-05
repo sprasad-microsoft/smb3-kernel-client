@@ -705,6 +705,13 @@ cfg_timers:
 	return 0;
 }
 
+static void ufs_qcom_link_startup_post_change(struct ufs_hba *hba)
+{
+	if (ufshcd_is_auto_hibern8_supported(hba))
+		ufshcd_rmwl(hba, UFS_HW_CLK_CTRL_EN, UFS_HW_CLK_CTRL_EN,
+			    UFS_AH8_CFG);
+}
+
 static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
 					enum ufs_notify_change_status status)
 {
@@ -730,6 +737,9 @@ static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
 		 */
 		err = ufshcd_disable_host_tx_lcc(hba);
 
+		break;
+	case POST_CHANGE:
+		ufs_qcom_link_startup_post_change(hba);
 		break;
 	default:
 		break;
@@ -1304,6 +1314,9 @@ static void ufs_qcom_advertise_quirks(struct ufs_hba *hba)
 
 	if (host->hw_ver.major > 0x3)
 		hba->quirks |= UFSHCD_QUIRK_REINIT_AFTER_MAX_GEAR_SWITCH;
+
+	if (host->hw_ver.major == 0x7 && host->hw_ver.minor == 0x1)
+		hba->quirks |= UFSHCD_QUIRK_EXTENDED_TX_EQTR_ADAPT_LENGTH_L0L1L2L3;
 
 	if (drvdata && drvdata->quirks)
 		hba->quirks |= drvdata->quirks;
@@ -2418,8 +2431,6 @@ static int ufs_qcom_config_esi(struct ufs_hba *hba)
 		ret = devm_request_irq(hba->dev, qi[idx].irq, ufs_qcom_mcq_esi_handler,
 				       IRQF_SHARED, "qcom-mcq-esi", qi + idx);
 		if (ret) {
-			dev_err(hba->dev, "%s: Failed to request IRQ for %d, err = %d\n",
-				__func__, qi[idx].irq, ret);
 			/* Free previously allocated IRQs */
 			for (int j = 0; j < idx; j++)
 				devm_free_irq(hba->dev, qi[j].irq, qi + j);
@@ -2781,7 +2792,7 @@ static int ufs_qcom_get_rx_fom(struct ufs_hba *hba,
 	if (ret) {
 		dev_err(hba->dev, "%s: Failed to apply TX EQ settings for HS-G%u: %d\n",
 			__func__, gear, ret);
-		return ret;
+		goto link_recover_and_restore;
 	}
 
 	/* Force PMC to target HS Gear to use new TX Equalization settings. */
@@ -2789,16 +2800,15 @@ static int ufs_qcom_get_rx_fom(struct ufs_hba *hba,
 	if (ret) {
 		dev_err(hba->dev, "%s: Failed to change power mode to HS-G%u, Rate-%s: %d\n",
 			__func__, gear, ufs_hs_rate_to_str(rate), ret);
-		return ret;
+		goto link_recover_and_restore;
 	}
 
 	ret = ufs_qcom_host_sw_rx_fom(hba, pwr_mode->lane_rx, fom);
-	if (ret) {
+	if (ret)
 		dev_err(hba->dev, "Failed to get SW FOM of TX (PreShoot: %u, DeEmphasis: %u): %d\n",
 			d_iter->preshoot, d_iter->deemphasis, ret);
-		return ret;
-	}
 
+link_recover_and_restore:
 	/* Restore Device's TX Equalization settings. */
 	ret = ufshcd_apply_tx_eq_settings(hba, &hba->tx_eq_params[gear - 1], gear);
 	if (ret) {

@@ -501,6 +501,10 @@ static int share_pfn_hyp(u64 pfn)
 	rb_link_node(&this->node, parent, node);
 	rb_insert_color(&this->node, &hyp_shared_pfns);
 	ret = kvm_call_hyp_nvhe(__pkvm_host_share_hyp, pfn);
+	if (ret) {
+		rb_erase(&this->node, &hyp_shared_pfns);
+		kfree(this);
+	}
 unlock:
 	mutex_unlock(&hyp_shared_pfns_lock);
 
@@ -520,13 +524,17 @@ static int unshare_pfn_hyp(u64 pfn)
 		goto unlock;
 	}
 
-	this->count--;
-	if (this->count)
+	if (this->count > 1) {
+		this->count--;
+		goto unlock;
+	}
+
+	ret = kvm_call_hyp_nvhe(__pkvm_host_unshare_hyp, pfn);
+	if (ret)
 		goto unlock;
 
 	rb_erase(&this->node, &hyp_shared_pfns);
 	kfree(this);
-	ret = kvm_call_hyp_nvhe(__pkvm_host_unshare_hyp, pfn);
 unlock:
 	mutex_unlock(&hyp_shared_pfns_lock);
 
@@ -536,8 +544,8 @@ unlock:
 int kvm_share_hyp(void *from, void *to)
 {
 	phys_addr_t start, end, cur;
+	int ret = 0;
 	u64 pfn;
-	int ret;
 
 	if (is_kernel_in_hyp_mode())
 		return 0;
@@ -559,10 +567,24 @@ int kvm_share_hyp(void *from, void *to)
 		pfn = __phys_to_pfn(cur);
 		ret = share_pfn_hyp(pfn);
 		if (ret)
-			return ret;
+			break;
 	}
 
-	return 0;
+	if (!ret)
+		return 0;
+
+	/*
+	 * Roll back the pages shared by this call. A failed unshare leaks
+	 * the page (it stays shared with the hypervisor and is no longer
+	 * reusable for pKVM) but breaks no isolation guarantee, so warn and
+	 * continue. Not expected in practice.
+	 */
+	for (end = cur, cur = start; cur < end; cur += PAGE_SIZE) {
+		pfn = __phys_to_pfn(cur);
+		WARN_ON(unshare_pfn_hyp(pfn));
+	}
+
+	return ret;
 }
 
 void kvm_unshare_hyp(void *from, void *to)
@@ -577,6 +599,11 @@ void kvm_unshare_hyp(void *from, void *to)
 	end = PAGE_ALIGN(__pa(to));
 	for (cur = start; cur < end; cur += PAGE_SIZE) {
 		pfn = __phys_to_pfn(cur);
+		/*
+		 * A failed unshare leaks the page: it stays shared with the
+		 * hypervisor and is no longer reusable for pKVM. No isolation
+		 * guarantee is broken, and this is not expected in practice.
+		 */
 		WARN_ON(unshare_pfn_hyp(pfn));
 	}
 }
@@ -2086,11 +2113,14 @@ static int user_mem_abort(const struct kvm_s2_fault_desc *s2fd)
 	 * Permission faults just need to update the existing leaf entry,
 	 * and so normally don't require allocations from the memcache. The
 	 * only exception to this is when dirty logging is enabled at runtime
-	 * and a write fault needs to collapse a block entry into a table.
+	 * and a fault needs to collapse a block entry into a table.
+	 * Under pKVM a permission fault can also collapse pages into a block,
+	 * which needs a fresh mapping object, and the hypervisor requires the
+	 * min-pages memcache even when the install allocates nothing.
 	 */
 	memcache = get_mmu_memcache(s2fd->vcpu);
-	if (!perm_fault || (memslot_is_logging(s2fd->memslot) &&
-			    kvm_is_write_fault(s2fd->vcpu))) {
+	if (!perm_fault || memslot_is_logging(s2fd->memslot) ||
+	    is_protected_kvm_enabled()) {
 		ret = topup_mmu_memcache(s2fd->vcpu, memcache);
 		if (ret)
 			return ret;
@@ -2623,6 +2653,10 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 	 * there aren't any CoCo VMs that support only private memory on arm64.
 	 */
 	if (kvm_slot_has_gmem(new) && !kvm_memslot_is_gmem_only(new))
+		return -EINVAL;
+
+	/* guest_memfd is incompatible with MTE. */
+	if (kvm_slot_has_gmem(new) && kvm_has_mte(kvm))
 		return -EINVAL;
 
 	hva = new->userspace_addr;
